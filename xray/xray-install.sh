@@ -7941,7 +7941,7 @@ unInstall() {
 # Update the script
 updateXrayAgent() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 更新脚本"
-    local scriptUrl="https://raw.githubusercontent.com/z9wen/xray-installer/main/xray-install.sh"
+    local scriptUrl="https://raw.githubusercontent.com/z9wen/vps-scripts/main/xray/xray-install.sh"
     local targetScript="/opt/xray-agent/install.sh"
     local temporaryScript
 
@@ -8097,7 +8097,7 @@ cronFunction() {
 menu() {
     cd "$HOME" || exit
     echoContent red "\n=============================================================="
-    echoContent green "当前版本：v2026.11.10.1794305652"
+    echoContent green "当前版本：v2026.11.10.1794306176"
     echoContent green "描述：Xray 一键安装管理脚本\c"
     showInstallStatus
     echoContent skyBlue "快捷命令：xraya"

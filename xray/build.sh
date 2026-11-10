@@ -36,7 +36,7 @@ done
 case ${mode} in
     --check)
         if [[ ! -f "${output_file}" ]]; then
-            echo "xray-install.sh does not exist; run ./build.sh" >&2
+            echo "xray-install.sh does not exist; run xray/build.sh" >&2
             exit 1
         fi
         build_version=$(sed -n 's/.*当前版本：v\([0-9][0-9.]*\)".*/\1/p' "${output_file}" | head -1)
@@ -67,7 +67,7 @@ bash -n "${temp_file}"
 case ${mode} in
     --check)
         if ! cmp -s "${output_file}" "${temp_file}"; then
-            echo "xray-install.sh is out of date; run ./build.sh" >&2
+            echo "xray-install.sh is out of date; run xray/build.sh" >&2
             diff -u "${output_file}" "${temp_file}" || true
             exit 1
         fi

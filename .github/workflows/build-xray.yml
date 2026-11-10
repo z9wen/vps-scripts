@@ -1,0 +1,44 @@
+name: Build Xray installer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "xray/src/**"
+      - "xray/build.sh"
+      - ".github/workflows/build-xray.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-xray-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build single-file installer
+        run: ./xray/build.sh
+
+      - name: Validate shell syntax
+        run: bash -n xray/xray-install.sh
+
+      - name: Commit generated installer
+        run: |
+          if git diff --quiet -- xray/xray-install.sh; then
+            echo "Installer is already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add xray/xray-install.sh
+          git commit -m "chore(xray): rebuild installer"
+          git push

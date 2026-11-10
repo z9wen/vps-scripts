@@ -43,7 +43,7 @@ unInstall() {
 # Update the script
 updateXrayAgent() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 更新脚本"
-    local scriptUrl="https://raw.githubusercontent.com/z9wen/xray-installer/main/xray-install.sh"
+    local scriptUrl="https://raw.githubusercontent.com/z9wen/vps-scripts/main/xray/xray-install.sh"
     local targetScript="/opt/xray-agent/install.sh"
     local temporaryScript
 
