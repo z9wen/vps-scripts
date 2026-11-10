@@ -8097,7 +8097,7 @@ cronFunction() {
 menu() {
     cd "$HOME" || exit
     echoContent red "\n=============================================================="
-    echoContent green "当前版本：v2026.11.10.1794305591"
+    echoContent green "当前版本：v2026.11.10.1794305652"
     echoContent green "描述：Xray 一键安装管理脚本\c"
     showInstallStatus
     echoContent skyBlue "快捷命令：xraya"
