@@ -1,0 +1,28 @@
+---
+// Page shell shared by every decoy site. __HUE__ (and the other __KEY__
+// placeholders in the pages) are filled in per install by the Xray
+// installer, so servers built from the same zip do not serve identical pages.
+interface Props {
+  title: string;
+  description: string;
+  lang?: string;
+  icon: string;
+  noindex?: boolean;
+}
+const { title, description, lang = "zh-CN", icon, noindex = false } = Astro.props;
+---
+<!doctype html>
+<html lang={lang} style="--hue:__HUE__">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="icon" href={icon} />
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

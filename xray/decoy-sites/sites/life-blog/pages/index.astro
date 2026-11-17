@@ -1,0 +1,31 @@
+---
+import Layout from "../components/Layout.astro";
+
+const posts = Object.entries(import.meta.glob("../posts/*.md", { eager: true }))
+  .map(([path, post]: [string, any]) => ({ slug: path.split("/").pop()!.replace(/\.md$/, ""), ...post.frontmatter }))
+  .sort((a, b) => a.order - b.order);
+---
+<Layout title="__BLOG__" description="__AUTHOR__的生活随笔：走路、做饭、读书和一些照片。">
+  {posts.map((post) => (
+    <a class="post" href={`/posts/${post.slug}/`}>
+      <div class={`photo ${post.photo}`} role="img" aria-label={post.caption}></div>
+      <div class="caption">{post.caption}</div>
+      <div class="body">
+        <h2>{post.title}</h2>
+        <div class="date">{post.date}</div>
+        <p>{post.summary}</p>
+        <span class="more">阅读全文</span>
+      </div>
+    </a>
+  ))}
+</Layout>
+
+<style>
+  .post { display: block; background: #fff; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; margin-bottom: 34px; color: var(--ink); }
+  .post:hover h2 { color: var(--accent); }
+  .body { padding: 8px 26px 24px; }
+  h2 { font-family: var(--serif); font-weight: 600; font-size: 24px; margin: 6px 0 4px; }
+  .date { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  p { margin: 0 0 10px; }
+  .more { font-size: 14px; color: var(--accent); }
+</style>

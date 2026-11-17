@@ -1,0 +1,196 @@
+---
+import Base from "../../../shared/Base.astro";
+
+const features = [
+  ["入", "收货与质检", "按采购单预约到货，扫码收货，质检结果自动回写，差异单据当场生成。"],
+  ["位", "智能上架", "根据商品周转、体积和重量推荐库位，减少二次搬运。"],
+  ["拣", "波次拣货", "订单自动合并成波次，按最短路径排序，PDA 与灯光拣货都支持。"],
+  ["库", "多仓库存", "线上线下、多地仓库共享一套库存，调拨建议每天自动生成。"],
+  ["运", "运输调度", "对接主流快递与零担承运商，比价下单，在途状态统一追踪。"],
+  ["报", "经营报表", "人效、坪效、库龄与缺货率按天汇总，支持导出与订阅推送。"],
+];
+const industries = [
+  ["快消与零售", "批次与效期管理、先进先出强制校验，大促期间按小时扩容。"],
+  ["汽配与机电", "海量 SKU 与替代件关系，序列号全程追溯，售后件单独管理。"],
+  ["医药与器械", "温区监控与 GSP 流程内置，冷链交接记录完整留存。"],
+];
+const bars = [46, 62, 55, 78, 70, 88, 64];
+const days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+---
+<Base
+  title="__NAME__ · __PRODUCT__ 仓储与供应链管理"
+  description="__NAME__为制造与零售企业提供仓储管理、库存协同和运输调度软件。"
+  icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='hsl(__HUE__,55%25,36%25)'/%3E%3Cpath d='M8 20l8-9 8 9' stroke='white' stroke-width='3' fill='none'/%3E%3C/svg%3E"
+>
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="/"><i></i>__NAME__</a>
+      <nav>
+        <ul>
+          <li><a href="#product">产品</a></li>
+          <li><a href="#solutions">行业方案</a></li>
+          <li><a href="#customers">客户</a></li>
+          <li><a href="#contact">联系我们</a></li>
+        </ul>
+      </nav>
+      <a class="btn primary" href="#contact">预约演示</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap hero">
+      <div>
+        <div class="eyebrow">__PRODUCT__ WMS · 仓储与供应链协同</div>
+        <h1>让每一件货物的去向，都清清楚楚</h1>
+        <p class="lead">从入库、上架、拣货到出库发运，__PRODUCT__ 把仓库里的每一步都变成可追溯的数据。多仓库存实时同步，异常提前预警。</p>
+        <div class="cta">
+          <a class="btn primary" href="#contact">预约产品演示</a>
+          <a class="btn ghost" href="#product">了解功能</a>
+        </div>
+      </div>
+      <div class="panel" aria-hidden="true">
+        <div class="panel-head"><span>华东一号仓 · 今日概览</span><span>__TODAY__</span></div>
+        <div class="kpis">
+          <div class="kpi"><b>2,418</b><span>待拣订单</span></div>
+          <div class="kpi"><b>98.6%</b><span>库存准确率</span></div>
+          <div class="kpi"><b>37 分钟</b><span>平均出库时长</span></div>
+        </div>
+        <div class="bars">{bars.map((height) => <div style={`height:${height}%`}></div>)}</div>
+        <div class="days">{days.map((day) => <span>{day}</span>)}</div>
+      </div>
+    </div>
+
+    <section class="alt" id="product">
+      <div class="wrap">
+        <h2>覆盖仓储作业的全部环节</h2>
+        <p class="sub">无需更换现有 ERP，__PRODUCT__ 通过标准接口接入，两到四周即可上线。</p>
+        <div class="grid">
+          {features.map(([mark, title, text]) => (
+            <div class="card"><div class="icon">{mark}</div><h3>{title}</h3><p>{text}</p></div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <section id="solutions">
+      <div class="wrap">
+        <h2>熟悉你所在的行业</h2>
+        <p class="sub">不同品类的仓库有不同的规矩，我们把行业经验做进了默认配置里。</p>
+        <div class="grid">
+          {industries.map(([title, text]) => <div class="card"><h3>{title}</h3><p>{text}</p></div>)}
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="customers">
+      <div class="wrap numbers">
+        <div><b>1,200+</b><span>服务的仓库</span></div>
+        <div><b>3.6 亿</b><span>每年处理订单行</span></div>
+        <div><b>27</b><span>个省份有部署</span></div>
+        <div><b>99.95%</b><span>年度服务可用性</span></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <h2>客户怎么说</h2>
+        <p class="sub">以下内容来自客户回访记录，已获授权。</p>
+        <div class="quotes">
+          <blockquote><p>上线三个月，盘点从每月停工两天变成了不停工循环盘点，库存差异率降了一半多。</p><footer>某家居品牌 · 物流总监</footer></blockquote>
+          <blockquote><p>大促那周订单是平时的六倍，波次拣货撑住了，没有加临时工也按时发完了货。</p><footer>某美妆电商 · 仓储负责人</footer></blockquote>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="contact">
+      <div class="wrap contact">
+        <div>
+          <h2>预约一次演示</h2>
+          <p class="sub">告诉我们你的仓库规模和主要痛点，产品顾问会在一个工作日内联系你，按你的业务流程做演示。</p>
+        </div>
+        <dl>
+          <dt>商务合作</dt><dd><a href="mailto:sales@__DOMAIN__">sales@__DOMAIN__</a></dd>
+          <dt>技术支持</dt><dd><a href="mailto:support@__DOMAIN__">support@__DOMAIN__</a></dd>
+          <dt>公司地址</dt><dd>__CITY__</dd>
+          <dt>工作时间</dt><dd>周一至周五 9:00–18:00</dd>
+        </dl>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site"><div class="wrap"><span>© __YEAR__ __NAME__</span><span>__PRODUCT__ 是__NAME__的产品</span></div></footer>
+</Base>
+
+<style is:global>
+  :root {
+    --accent: hsl(var(--hue) 55% 36%);
+    --accent-soft: hsl(var(--hue) 45% 95%);
+    --ink: #17201d;
+    --muted: #5d6a66;
+    --line: #e2e8e5;
+    --alt: #f6f8f7;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: #fff; line-height: 1.7; font-size: 16px; }
+  a { color: inherit; text-decoration: none; }
+</style>
+
+<style>
+  .wrap { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+  header { position: sticky; top: 0; background: rgb(255 255 255 / 0.94); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); z-index: 5; }
+  .nav { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 24px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+  .brand i { width: 28px; height: 28px; border-radius: 7px; background: var(--accent); display: inline-block; position: relative; }
+  .brand i::after { content: ""; position: absolute; left: 7px; top: 9px; width: 14px; height: 8px; border: 3px solid #fff; border-top: 0; border-right: 0; transform: rotate(-45deg); }
+  nav ul { display: flex; gap: 28px; list-style: none; margin: 0; padding: 0; font-size: 15px; color: var(--muted); }
+  nav a:hover { color: var(--accent); }
+  .btn { display: inline-block; padding: 11px 22px; border-radius: 8px; font-weight: 600; font-size: 15px; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.ghost { border: 1px solid var(--line); }
+  .hero { padding: 88px 24px 72px; display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+  .eyebrow { color: var(--accent); font-weight: 600; font-size: 14px; letter-spacing: 0.06em; }
+  h1 { font-size: 44px; line-height: 1.25; margin: 14px 0 18px; }
+  .lead { color: var(--muted); font-size: 18px; margin: 0 0 30px; max-width: 30em; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .panel { border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: #fff; box-shadow: 0 18px 40px -24px rgb(20 40 35 / 0.35); }
+  .panel-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--alt); border-radius: 10px; padding: 12px 14px; }
+  .kpi b { display: block; font-size: 22px; }
+  .kpi span { font-size: 12px; color: var(--muted); }
+  .bars { display: flex; align-items: flex-end; gap: 10px; height: 120px; padding: 0 4px; border-bottom: 1px solid var(--line); }
+  .bars div { flex: 1; background: var(--accent-soft); border-radius: 5px 5px 0 0; }
+  .bars div:nth-child(odd) { background: var(--accent); opacity: 0.85; }
+  .days { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding: 6px 4px 0; }
+  section { padding: 80px 0; }
+  section.alt { background: var(--alt); }
+  h2 { font-size: 30px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 40px; max-width: 36em; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 26px; }
+  .card h3 { margin: 0 0 8px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .icon { width: 38px; height: 38px; border-radius: 9px; background: var(--accent-soft); margin-bottom: 16px; display: grid; place-items: center; color: var(--accent); font-weight: 700; }
+  .numbers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; text-align: center; }
+  .numbers b { display: block; font-size: 34px; color: var(--accent); }
+  .numbers span { color: var(--muted); font-size: 14px; }
+  .quotes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  blockquote { margin: 0; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 26px; }
+  blockquote p { margin: 0 0 14px; }
+  blockquote footer { color: var(--muted); font-size: 14px; }
+  .contact { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+  .contact dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; }
+  .contact dt { color: var(--muted); }
+  .contact dd { margin: 0; }
+  footer.site { border-top: 1px solid var(--line); padding: 28px 0; color: var(--muted); font-size: 14px; }
+  footer.site .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; padding-top: 56px; }
+    h1 { font-size: 34px; }
+    .grid, .quotes, .contact { grid-template-columns: 1fr; }
+    .numbers { grid-template-columns: repeat(2, 1fr); }
+    nav ul { display: none; }
+  }
+</style>

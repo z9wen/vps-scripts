@@ -1,23 +1,38 @@
+# Archive URL of decoy site number $1 (menu order, see nginxTemplates).
+nginxTemplateArchive() {
+    local number=$1
+    [[ "${number}" =~ ^[0-9]+$ ]] && ((number >= 1 && number <= ${#nginxTemplates[@]})) || return 1
+    echo "${decoySiteBase}/${nginxTemplates[number - 1]#*|}.zip"
+}
+
 deployNginxTemplate() {
-    local templateNumber=$1 stagingDir archive backupDir
+    local templateNumber=$1 url site stagingDir archive siteRoot backupDir
     [[ -n "${nginxStaticPath}" && "${nginxStaticPath}" != "/" ]] || return 1
+    url=$(nginxTemplateArchive "${templateNumber}") || return 1
+    site=${nginxTemplates[templateNumber - 1]#*|}
     stagingDir=$(mktemp -d /tmp/xray-agent-site.XXXXXX) || return 1
     archive="${stagingDir}/site.zip"
 
-    if ! downloadFile "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${templateNumber}.zip" "${archive}" || ! unzip -tq "${archive}" >/dev/null 2>&1; then
+    if ! downloadFile "${url}" "${archive}" --https-only || ! unzip -tq "${archive}" >/dev/null 2>&1; then
         rm -rf "${stagingDir}"
         echoContent red " ---> 伪装站下载或压缩包校验失败，保留现有站点"
         return 1
     fi
-    unzip -oq "${archive}" -d "${stagingDir}/content" || {
+    siteRoot="${stagingDir}/content"
+    unzip -oq "${archive}" -d "${siteRoot}" || {
         rm -rf "${stagingDir}"
         return 1
     }
     rm -f "${archive}"
-    [[ -n $(find "${stagingDir}/content" -mindepth 1 -print -quit 2>/dev/null) ]] || {
+    [[ -f "${siteRoot}/index.html" ]] || {
         rm -rf "${stagingDir}"
+        echoContent red " ---> 伪装站压缩包内容不完整，保留现有站点"
         return 1
     }
+    decoyPrepareSite "${siteRoot}" "${site}"
+    # Marks the directory as our decoy (reinstall prompt, uninstall); nginx
+    # answers /check with 404, so it does not identify this script.
+    : >"${siteRoot}/check"
 
     mkdir -p "${nginxStaticPath}"
     backupDir=$(mktemp -d /tmp/xray-agent-site-backup.XXXXXX) || {
@@ -26,7 +41,7 @@ deployNginxTemplate() {
     }
     cp -a "${nginxStaticPath}/." "${backupDir}/" 2>/dev/null || true
     find "${nginxStaticPath}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-    if ! cp -a "${stagingDir}/content/." "${nginxStaticPath}/"; then
+    if ! cp -a "${siteRoot}/." "${nginxStaticPath}/"; then
         find "${nginxStaticPath}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
         cp -a "${backupDir}/." "${nginxStaticPath}/" 2>/dev/null || true
         rm -rf "${stagingDir}" "${backupDir}"
@@ -52,12 +67,12 @@ nginxBlog() {
         fi
 
         if [[ "${nginxBlogInstallStatus}" == "y" ]]; then
-            randomNum=$(randomNum 1 9)
+            randomNum=$(randomNum 1 "${#nginxTemplates[@]}")
             deployNginxTemplate "${randomNum}" || return 1
             echoContent green " ---> 添加伪装站点成功"
         fi
     else
-        randomNum=$(randomNum 1 9)
+        randomNum=$(randomNum 1 "${#nginxTemplates[@]}")
         deployNginxTemplate "${randomNum}" || return 1
         echoContent green " ---> 添加伪装站点成功"
     fi
@@ -200,20 +215,15 @@ updateNginxBlog() {
     fi
     echoContent red "=============================================================="
     echoContent yellow "# 如需自定义，请手动复制模版文件到 ${nginxStaticPath} \n"
-    echoContent yellow "1.新手引导"
-    echoContent yellow "2.游戏网站"
-    echoContent yellow "3.个人博客01"
-    echoContent yellow "4.企业站"
-    echoContent yellow "5.解锁加密的音乐文件模版[https://github.com/ix64/unlock-music]"
-    echoContent yellow "6.mikutap[https://github.com/HFIProgramming/mikutap]"
-    echoContent yellow "7.企业站02"
-    echoContent yellow "8.个人博客02"
-    echoContent yellow "9.404自动跳转baidu"
-    echoContent yellow "10.重定向网站（不使用伪装站）"
+    local templateIndex redirectOption=$((${#nginxTemplates[@]} + 1))
+    for templateIndex in "${!nginxTemplates[@]}"; do
+        echoContent yellow "$((templateIndex + 1)).${nginxTemplates[templateIndex]%%|*}"
+    done
+    echoContent yellow "${redirectOption}.重定向网站（不使用伪装站）"
     echoContent red "=============================================================="
     read -r -p "请选择:" selectInstallNginxBlogType
 
-    if [[ "${selectInstallNginxBlogType}" == "10" ]]; then
+    if [[ "${selectInstallNginxBlogType}" == "${redirectOption}" ]]; then
         echoContent red "\n=============================================================="
         echoContent skyBlue "📌 重定向配置说明："
         echoContent yellow "• 重定向会替代伪装站点，根路由 / 将直接跳转"
@@ -253,7 +263,7 @@ updateNginxBlog() {
             exit 0
         fi
     fi
-    if [[ "${selectInstallNginxBlogType}" =~ ^[1-9]$ ]]; then
+    if nginxTemplateArchive "${selectInstallNginxBlogType}" >/dev/null; then
         deployNginxTemplate "${selectInstallNginxBlogType}" || return 1
         echoContent green " ---> 更换伪站成功"
     else

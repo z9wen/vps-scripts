@@ -1,0 +1,150 @@
+---
+import Base from "../../../shared/Base.astro";
+
+const services = [
+  ["Data platforms", "Warehouses, pipelines and the boring parts around them: lineage, access control, cost reporting."],
+  ["Cloud infrastructure", "Infrastructure as code, sensible networking and deployments your on-call engineer will not dread."],
+  ["Reliability reviews", "A two-week look at how your systems fail, with a written plan ranked by risk and effort."],
+];
+const work = [
+  ["Regional grocery chain", "Replaced nightly batch exports with streaming inventory updates across 140 stores.", "−71%", "stock-out reports"],
+  ["Freight marketplace", "Moved a single-region deployment to three regions with automated failover drills.", "99.98%", "uptime over 12 months"],
+  ["Public research institute", "Built a shared analysis platform for 30 research groups with per-project budgets.", "−42%", "compute spend"],
+];
+const steps = [
+  ["Listen", "Interviews with the people who build and operate the system today."],
+  ["Plan", "A short written proposal with scope, risks and a fixed price."],
+  ["Build", "Weekly demos, pairing with your engineers, everything in your repositories."],
+  ["Hand over", "Runbooks, a training session and a month of support after we leave."],
+];
+---
+<Base
+  lang="en"
+  title="__NAME__ — Infrastructure and data engineering"
+  description="__NAME__ is a small engineering consultancy in __CITY__ building data platforms and cloud infrastructure."
+  icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='hsl(__HUE__,45%25,22%25)'/%3E%3Ccircle cx='16' cy='16' r='5' fill='white'/%3E%3C/svg%3E"
+>
+  <div class="top">
+    <div class="wrap nav">
+      <a class="logo" href="/">__NAME__</a>
+      <ul>
+        <li><a href="#services">Services</a></li>
+        <li><a href="#work">Work</a></li>
+        <li><a href="#approach">Approach</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ul>
+    </div>
+    <div class="wrap hero">
+      <h1>Quiet infrastructure for teams that <em>ship</em>.</h1>
+      <div>
+        <p>We are a small engineering practice in __CITY__. We design data platforms and cloud infrastructure, then hand them over to your team in a state they can run.</p>
+        <a class="cta" href="#contact">Start a conversation</a>
+      </div>
+    </div>
+  </div>
+
+  <section id="services">
+    <div class="wrap">
+      <p class="label">Services</p>
+      <h2>Three things, done carefully.</h2>
+      <div class="services">{services.map(([title, text]) => <div><h3>{title}</h3><p>{text}</p></div>)}</div>
+    </div>
+  </section>
+
+  <section id="work">
+    <div class="wrap">
+      <p class="label">Selected work</p>
+      <h2>Recent projects, described by what changed.</h2>
+      <div class="work">
+        {work.map(([who, text, metric, unit]) => (
+          <div class="case"><span class="who">{who}</span><p>{text}</p><span class="metric">{metric}<small>{unit}</small></span></div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section id="approach">
+    <div class="wrap">
+      <p class="label">Approach</p>
+      <h2>How an engagement usually runs.</h2>
+      <ol class="steps">{steps.map(([title, text]) => <li><h3>{title}</h3><p>{text}</p></li>)}</ol>
+    </div>
+  </section>
+
+  <section class="contact" id="contact">
+    <div class="wrap">
+      <p class="label">Contact</p>
+      <h2>Tell us what you are working on.</h2>
+      <div class="contact-grid">
+        <div><b>Email</b><a href="mailto:hello@__DOMAIN__">hello@__DOMAIN__</a></div>
+        <div><b>Studio</b>__CITY__</div>
+        <div><b>Availability</b>Taking on new projects from next quarter</div>
+      </div>
+    </div>
+  </section>
+  <div class="wrap foot"><span>© __YEAR__ __NAME__</span><span>Registered in __CITY__</span></div>
+</Base>
+
+<style is:global>
+  :root {
+    --deep: hsl(var(--hue) 45% 14%);
+    --deep-2: hsl(var(--hue) 40% 20%);
+    --accent: hsl(var(--hue) 70% 72%);
+    --ink: #1c1f24;
+    --muted: #5f6670;
+    --line: #e4e6ea;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: #fbfbfc; line-height: 1.65; font-size: 17px; }
+  a { color: inherit; }
+</style>
+
+<style>
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+  .top { background: var(--deep); color: #e9ecf2; }
+  .nav { display: flex; justify-content: space-between; align-items: center; height: 72px; }
+  .logo { font-family: var(--serif); font-size: 22px; text-decoration: none; }
+  .nav ul { display: flex; gap: 30px; list-style: none; margin: 0; padding: 0; font-size: 15px; }
+  .nav a { text-decoration: none; opacity: 0.85; }
+  .nav a:hover { opacity: 1; }
+  .hero { padding-top: 96px; padding-bottom: 110px; display: grid; grid-template-columns: 1.4fr 1fr; gap: 48px; align-items: end; }
+  .hero h1 { font-family: var(--serif); font-weight: 400; font-size: 56px; line-height: 1.08; margin: 0; }
+  .hero h1 em { color: var(--accent); }
+  .hero p { margin: 0 0 6px; color: #b9c1cf; font-size: 18px; }
+  .cta { display: inline-block; margin-top: 22px; padding: 12px 22px; border: 1px solid var(--accent); color: var(--accent); text-decoration: none; border-radius: 2px; }
+  section { padding: 88px 0; border-bottom: 1px solid var(--line); }
+  .label { font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 18px; }
+  h2 { font-family: var(--serif); font-weight: 400; font-size: 36px; line-height: 1.2; margin: 0 0 40px; max-width: 20em; }
+  .services { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+  .services h3 { font-size: 18px; margin: 0 0 8px; }
+  .services p { margin: 0; color: var(--muted); font-size: 16px; }
+  .case { display: grid; grid-template-columns: 200px 1fr 160px; gap: 32px; padding: 28px 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .case:last-child { border-bottom: 1px solid var(--line); }
+  .who { font-weight: 600; }
+  .case p { margin: 0; color: var(--muted); }
+  .metric { font-family: var(--serif); font-size: 28px; text-align: right; }
+  .metric small { display: block; font-family: var(--sans); font-size: 13px; color: var(--muted); }
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; counter-reset: step; padding: 0; margin: 0; }
+  .steps li { list-style: none; counter-increment: step; border-top: 2px solid var(--deep); padding-top: 16px; }
+  .steps li::before { content: "0" counter(step); display: block; font-family: var(--serif); font-size: 24px; margin-bottom: 6px; color: var(--deep-2); }
+  .steps h3 { margin: 0 0 6px; font-size: 17px; }
+  .steps p { margin: 0; color: var(--muted); font-size: 15px; }
+  .contact { background: var(--deep); color: #e9ecf2; border: 0; }
+  .contact h2 { color: #fff; }
+  .contact .label, .contact-grid b { color: #9aa4b6; }
+  .contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; font-size: 16px; }
+  .contact-grid b { display: block; font-weight: 400; font-size: 14px; margin-bottom: 4px; }
+  .contact a { color: var(--accent); }
+  .foot { padding-top: 28px; padding-bottom: 28px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; padding-top: 64px; padding-bottom: 72px; }
+    .hero h1 { font-size: 40px; }
+    .services, .steps, .contact-grid { grid-template-columns: 1fr; }
+    .case { grid-template-columns: 1fr; gap: 6px; }
+    .metric { text-align: left; }
+    .nav ul { display: none; }
+  }
+</style>

@@ -1,0 +1,56 @@
+---
+import Base from "../../../shared/Base.astro";
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+<Base
+  title={title}
+  description={description}
+  icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='hsl(__HUE__,45%25,55%25)'/%3E%3C/svg%3E"
+>
+  <div class="wrap">
+    <header>
+      <a class="name" href="/">__BLOG__</a>
+      <p>__AUTHOR__的生活随笔 · 走路、做饭、读书</p>
+      <nav><a href="/">全部</a><a href="/posts/weekend-hike/">走走</a><a href="/posts/scallion-noodles/">吃吃</a><a href="/posts/reading-list/">读读</a><a href="/#about">关于我</a></nav>
+    </header>
+    <slot />
+    <div class="about" id="about"><b>__AUTHOR__</b> · 在城市里上班，周末尽量往外跑。<br />来信请寄 <a href="mailto:hi@__DOMAIN__">hi@__DOMAIN__</a> · © __YEAR__</div>
+  </div>
+</Base>
+
+<style is:global>
+  :root {
+    --ink: #262a33;
+    --muted: #6f7684;
+    --line: #e3e6ec;
+    --accent: hsl(var(--hue) 45% 42%);
+    --serif: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f7f8fa; color: var(--ink); font-family: var(--sans); line-height: 1.9; font-size: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  .photo { height: 260px; position: relative; }
+  .photo.hill { background: linear-gradient(180deg, #cfe3f2 0%, #eaf2f7 45%, transparent 46%), linear-gradient(170deg, transparent 52%, hsl(120 25% 52%) 52.5%, hsl(120 25% 44%) 100%), linear-gradient(195deg, transparent 58%, hsl(130 22% 38%) 58.5%); }
+  .photo.hill::after { content: ""; position: absolute; right: 16%; top: 16%; width: 46px; height: 46px; border-radius: 50%; background: #fff7d6; box-shadow: 0 0 40px 10px rgb(255 240 190 / 0.7); }
+  .photo.table { background: radial-gradient(circle at 38% 52%, #fffaf0 0 70px, #e9dccb 71px 78px, transparent 79px), radial-gradient(circle at 66% 44%, #7a4a2a 0 26px, #f3efe9 27px 40px, transparent 41px), linear-gradient(135deg, #c79b6d, #b07f52); }
+  .photo.books { background: linear-gradient(90deg, #2f4858 0 9%, #86bbd8 9% 15%, #f6ae2d 15% 22%, #33658a 22% 30%, #f26419 30% 34%, #55dde0 34% 41%, #e4e0d6 41% 100%); }
+  .photo.books::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 30px; background: #8b6a4e; }
+  .caption { font-size: 13px; color: var(--muted); padding: 10px 22px 0; }
+</style>
+
+<style>
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 64px 0 36px; text-align: center; }
+  .name { font-family: var(--serif); font-weight: 600; font-size: 40px; letter-spacing: 0.08em; color: var(--ink); }
+  header p { color: var(--muted); margin: 8px 0 0; }
+  nav { display: flex; justify-content: center; gap: 26px; font-size: 15px; margin-top: 18px; flex-wrap: wrap; }
+  nav a { color: var(--muted); }
+  .about { text-align: center; color: var(--muted); padding: 20px 0 60px; font-size: 15px; }
+  .about b { color: var(--ink); font-family: var(--serif); }
+</style>

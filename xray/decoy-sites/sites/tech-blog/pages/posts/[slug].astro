@@ -1,0 +1,29 @@
+---
+import Layout from "../../components/Layout.astro";
+
+export function getStaticPaths() {
+  return Object.entries(import.meta.glob("../../posts/*.md", { eager: true })).map(([path, post]: [string, any]) => ({
+    params: { slug: path.split("/").pop()!.replace(/\.md$/, "") },
+    props: { post },
+  }));
+}
+const { post } = Astro.props as { post: any };
+const { Content, frontmatter } = post;
+---
+<Layout title={`${frontmatter.title} · __BLOG__`} description={frontmatter.summary}>
+  <article>
+    <h1>{frontmatter.title}</h1>
+    <div class="meta">{frontmatter.date}<b>#{frontmatter.tag}</b></div>
+    <div class="content"><Content /></div>
+    <p class="back"><a href="/">← 返回文章列表</a></p>
+  </article>
+</Layout>
+
+<style>
+  article { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  h1 { font-size: 30px; line-height: 1.35; margin: 0 0 8px; }
+  .meta { font-size: 13px; color: var(--muted); margin-bottom: 26px; font-family: var(--mono); }
+  .meta b { font-weight: 400; color: var(--accent); margin-left: 10px; }
+  .content :global(h2) { font-size: 21px; margin: 32px 0 10px; }
+  .back { margin: 40px 0 0; padding-top: 20px; border-top: 1px solid var(--line); font-size: 15px; }
+</style>

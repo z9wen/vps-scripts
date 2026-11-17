@@ -1,0 +1,60 @@
+---
+import Layout from "../components/Layout.astro";
+
+const posts = Object.entries(import.meta.glob("../posts/*.md", { eager: true }))
+  .map(([path, post]: [string, any]) => ({ slug: path.split("/").pop()!.replace(/\.md$/, ""), ...post.frontmatter }))
+  .sort((a, b) => a.order - b.order);
+---
+<Layout title="__BLOG__ · __AUTHOR__的技术笔记" description="__AUTHOR__记录后端开发、数据库和自建服务的笔记。">
+  <div class="layout">
+    <main>
+      {posts.map((post) => (
+        <article>
+          <h2><a href={`/posts/${post.slug}/`}>{post.title}</a></h2>
+          <div class="meta">{post.date}<b>#{post.tag}</b></div>
+          <p>{post.summary}</p>
+          <a class="more" href={`/posts/${post.slug}/`}>继续阅读 →</a>
+        </article>
+      ))}
+    </main>
+    <aside>
+      <section id="about">
+        <h3>关于</h3>
+        <p>我是__AUTHOR__，写了十年后端，现在主要和数据库、队列打交道。这里记一些踩过的坑和觉得有用的做法。</p>
+        <p>联系：<a href="mailto:me@__DOMAIN__">me@__DOMAIN__</a></p>
+      </section>
+      <section>
+        <h3>标签</h3>
+        <div class="tags">{["数据库", "Rust", "Go", "自建服务", "Linux", "读书"].map((tag) => <span>{tag}</span>)}</div>
+      </section>
+      <section id="archive">
+        <h3>归档</h3>
+        <ul class="archive">
+          <li><span>__YEAR__</span><span>9 篇</span></li>
+          <li><span>__YEAR_1__</span><span>17 篇</span></li>
+          <li><span>__YEAR_2__</span><span>21 篇</span></li>
+          <li><span>__YEAR_3__</span><span>14 篇</span></li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+</Layout>
+
+<style>
+  .layout { max-width: 1060px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: 1fr 240px; gap: 56px; }
+  article { padding: 6px 0 34px; border-bottom: 1px solid var(--line); margin-bottom: 34px; }
+  h2 { font-size: 23px; line-height: 1.4; margin: 0 0 6px; }
+  h2 a { color: var(--ink); }
+  .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; font-family: var(--mono); }
+  .meta b { font-weight: 400; color: var(--accent); margin-left: 10px; }
+  article p { margin: 0 0 10px; }
+  .more { font-size: 14px; }
+  aside { padding-top: 6px; font-size: 15px; }
+  aside h3 { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  aside section { margin-bottom: 34px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tags span { font-size: 13px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+  .archive { list-style: none; margin: 0; padding: 0; font-variant-numeric: tabular-nums; }
+  .archive li { display: flex; justify-content: space-between; color: var(--muted); padding: 3px 0; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; gap: 10px; } }
+</style>

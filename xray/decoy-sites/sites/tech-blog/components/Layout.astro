@@ -1,0 +1,49 @@
+---
+import Base from "../../../shared/Base.astro";
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+<Base
+  title={title}
+  description={description}
+  icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23222'/%3E%3Cpath d='M8 11l6 5-6 5M16 22h8' stroke='hsl(__HUE__,70%25,65%25)' stroke-width='2.5' fill='none'/%3E%3C/svg%3E"
+>
+  <header>
+    <a class="site" href="/"><span>~/</span>__BLOG__</a>
+    <nav><a href="/">文章</a><a href="/#about">关于</a><a href="/#archive">归档</a></nav>
+  </header>
+  <slot />
+  <footer>© __YEAR__ __AUTHOR__ · 本站内容采用 CC BY-NC 4.0 许可</footer>
+</Base>
+
+<style is:global>
+  :root {
+    --ink: #222428;
+    --muted: #6b7079;
+    --line: #e7e8eb;
+    --code: #f5f6f8;
+    --accent: hsl(var(--hue) 60% 40%);
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+    --mono: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink); font-family: var(--sans); line-height: 1.85; font-size: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  pre { border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 13.5px; line-height: 1.6; }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  p code, li code { background: var(--code); padding: 1px 6px; border-radius: 4px; }
+</style>
+
+<style>
+  header { max-width: 1060px; margin: 0 auto; padding: 44px 24px 30px; display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .site { font-size: 24px; font-weight: 700; color: var(--ink); }
+  .site span { font-family: var(--mono); color: var(--accent); }
+  nav { display: flex; gap: 20px; font-size: 15px; }
+  nav a { color: var(--muted); }
+  footer { max-width: 1060px; margin: 0 auto; padding: 30px 24px 50px; color: var(--muted); font-size: 14px; }
+</style>

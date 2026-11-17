@@ -1,0 +1,48 @@
+name: Build decoy sites
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "xray/decoy-sites/**"
+      - "!xray/decoy-sites/dist/**"
+      - ".github/workflows/build-decoy-sites.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-decoy-sites-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: xray/decoy-sites/package-lock.json
+
+      - name: Build the sites into dist/<site>.zip
+        run: ./xray/decoy-sites/build.sh
+
+      - name: Commit built sites
+        run: |
+          if [ -z "$(git status --porcelain -- xray/decoy-sites/dist)" ]; then
+            echo "Decoy sites are already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add xray/decoy-sites/dist
+          git commit -m "chore(xray): rebuild decoy sites"
+          git push

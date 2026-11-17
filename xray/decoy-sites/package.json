@@ -1,0 +1,13 @@
+{
+  "name": "xray-decoy-sites",
+  "private": true,
+  "type": "module",
+  "description": "Static decoy sites for the Xray installer, built with Astro into dist/<site>.zip",
+  "scripts": {
+    "build": "./build.sh",
+    "dev": "astro dev"
+  },
+  "devDependencies": {
+    "astro": "7.4.5"
+  }
+}

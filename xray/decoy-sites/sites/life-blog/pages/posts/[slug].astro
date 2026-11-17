@@ -1,0 +1,32 @@
+---
+import Layout from "../../components/Layout.astro";
+
+export function getStaticPaths() {
+  return Object.entries(import.meta.glob("../../posts/*.md", { eager: true })).map(([path, post]: [string, any]) => ({
+    params: { slug: path.split("/").pop()!.replace(/\.md$/, "") },
+    props: { post },
+  }));
+}
+const { post } = Astro.props as { post: any };
+const { Content, frontmatter } = post;
+---
+<Layout title={`${frontmatter.title} · __BLOG__`} description={frontmatter.summary}>
+  <article>
+    <div class={`photo ${frontmatter.photo}`} role="img" aria-label={frontmatter.caption}></div>
+    <div class="caption">{frontmatter.caption}</div>
+    <div class="body">
+      <h1>{frontmatter.title}</h1>
+      <div class="date">{frontmatter.date}</div>
+      <Content />
+      <p class="back"><a href="/">← 回到首页</a></p>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  article { background: #fff; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; margin-bottom: 34px; }
+  .body { padding: 8px 30px 28px; }
+  h1 { font-family: var(--serif); font-weight: 600; font-size: 28px; margin: 6px 0 4px; }
+  .date { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  .back { margin: 26px 0 0; font-size: 15px; }
+</style>
