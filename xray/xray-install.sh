@@ -234,16 +234,12 @@ initVar() {
     # Previous installation config status
     lastInstallationConfig=
 
-    # Native ACME related
-    nativeACMEEnabled=
-    nativeCertPath=
-    nativeKeyPath=
-
-    # Existing certificates managed by acme.sh/acme_manage.sh
+    # Existing certificate issued by acme.sh/acme_manage.sh or certbot
     acmeManagedCertSelected=
     acmeManagedHome=
     acmeManagedSourceDomain=
-    acmeManagedEcc=
+    acmeManagedCertFile=
+    acmeManagedKeyFile=
 
     # Auto-discovered wildcard acme.sh certificate path
     dnsTLSAcmeCertPath=
@@ -820,6 +816,8 @@ server {
 
 	server_name ${domain};
 	root ${nginxStaticPath};
+	# The decoy marker file must not identify this script
+	location = /check { return 404; }
 
 ${xhttpLocationConfig}
 	location / {
@@ -834,6 +832,8 @@ server {
 	real_ip_header proxy_protocol;
 
 	root ${nginxStaticPath};
+	# The decoy marker file must not identify this script
+	location = /check { return 404; }
 ${xhttpLocationConfig}
 	location / {
 	${fallbackLocationConfig}
@@ -952,6 +952,23 @@ restoreStoppedNginx() {
     handleNginx start
 }
 
+# A panel's nginx serves all its websites, so it is never stopped to apply
+# our config: test, then reload only when the test passes (on failure the
+# sites keep running on the old config). A stopped nginx is started as usual.
+applyPanelNginxConfig() {
+    local output
+    if ! hostNginxRunning; then
+        handleNginx start
+        return
+    fi
+    if ! output=$(hostNginx -t 2>&1); then
+        echoContent red " ---> Nginx 配置测试失败，面板站点继续使用原配置"
+        echoContent yellow "$(tail -3 <<<"${output}")"
+        return 1
+    fi
+    panelNginxReload >/dev/null 2>&1
+}
+
 # Manage Nginx
 handleNginx() {
     # Detect how Nginx is managed
@@ -1045,32 +1062,31 @@ handleNginx() {
         fi
     fi
 }
-# Install Nginx
+# Install nginx from the nginx.org stable repository (Debian/Ubuntu). The
+# signing key is fetched before the repository is added, so a failed download
+# does not leave an unsigned source behind that breaks later apt updates.
 installNginxTools() {
-
-    if [[ "${release}" == "debian" ]]; then
-        sudo apt install gnupg2 ca-certificates lsb-release -y >/dev/null 2>&1
-        # Use the stable release instead of mainline
-        echo "deb http://nginx.org/packages/debian $(lsb_release -cs) nginx" | sudo tee /etc/apt/sources.list.d/nginx.list >/dev/null 2>&1
-        echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" | sudo tee /etc/apt/preferences.d/99nginx >/dev/null 2>&1
-        downloadFile "https://nginx.org/keys/nginx_signing.key" "/tmp/nginx_signing.key" || return 1
-        # gpg --dry-run --quiet --import --import-options import-show /tmp/nginx_signing.key
+    local installLog=/opt/xray-agent/install.log
+    if [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
+        apt install gnupg2 ca-certificates lsb-release -y >>"${installLog}" 2>&1
+        if ! downloadFile "https://nginx.org/keys/nginx_signing.key" "/tmp/nginx_signing.key"; then
+            echoContent red " ---> 下载 nginx.org 签名密钥失败，请检查网络后重试"
+            return 1
+        fi
         sudo mv /tmp/nginx_signing.key /etc/apt/trusted.gpg.d/nginx_signing.asc
-        sudo apt update >/dev/null 2>&1
-
-    elif [[ "${release}" == "ubuntu" ]]; then
-        sudo apt install gnupg2 ca-certificates lsb-release -y >/dev/null 2>&1
         # Use the stable release instead of mainline
-        echo "deb http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" | sudo tee /etc/apt/sources.list.d/nginx.list >/dev/null 2>&1
-        echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" | sudo tee /etc/apt/preferences.d/99nginx >/dev/null 2>&1
-        downloadFile "https://nginx.org/keys/nginx_signing.key" "/tmp/nginx_signing.key" || return 1
-        # gpg --dry-run --quiet --import --import-options import-show /tmp/nginx_signing.key
-        sudo mv /tmp/nginx_signing.key /etc/apt/trusted.gpg.d/nginx_signing.asc
-        sudo apt update >/dev/null 2>&1
-
+        echo "deb http://nginx.org/packages/${release} $(lsb_release -cs) nginx" | sudo tee /etc/apt/sources.list.d/nginx.list >/dev/null
+        echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" | sudo tee /etc/apt/preferences.d/99nginx >/dev/null
+        apt update >>"${installLog}" 2>&1
     fi
-    ${installType} nginx >/dev/null 2>&1
-    bootStartup nginx
+    ${installType} nginx >>"${installLog}" 2>&1
+    if ! command -v nginx >/dev/null 2>&1; then
+        echoContent red " ---> Nginx 安装失败，安装日志: ${installLog}"
+        tail -n 20 "${installLog}"
+        return 1
+    fi
+    echoContent green " ---> 已安装 $(nginx -v 2>&1 | sed 's/^nginx version: //')"
+    bootStartup nginx || echoContent yellow " ---> 无法设置 Nginx 开机自启，请手动执行 systemctl enable nginx"
 }
 
 # Remove the default nginx config
@@ -1193,10 +1209,8 @@ checkBTPanel() {
                     nginxStaticPath="/www/wwwroot/${btDomain}/html/"
 
                     mkdir -p "/www/wwwroot/${btDomain}/html/"
-
-                    if [[ -f "/www/wwwroot/${btDomain}/.user.ini" ]]; then
-                        chattr -i "/www/wwwroot/${btDomain}/.user.ini"
-                    fi
+                    # The site's .user.ini keeps the panel's immutable flag
+                    # (its open_basedir protection); nothing here writes it.
                     nginxConfigPath="/www/server/panel/vhost/nginx/"
                 fi
             else
@@ -1288,6 +1302,8 @@ stripXhttpPanelBlock() {
 # Usage: syncPanelXhttpLocation install|remove
 syncPanelXhttpLocation() {
     local action=$1 target file mode backupDir index=0 output
+    # Set when the location is in the panel site and nginx accepted it.
+    panelXhttpInstalled=
     [[ -n "${btDomain}" ]] || return 0
     if ! target=$(findPanelXhttpTarget); then
         if [[ "${action}" == "install" ]]; then
@@ -1341,6 +1357,7 @@ syncPanelXhttpLocation() {
     rm -rf "${backupDir}"
     panelNginxReload >/dev/null 2>&1
     if [[ "${action}" == "install" ]]; then
+        panelXhttpInstalled=true
         echoContent green " ---> XHTTP 已接入面板站点 https://${btDomain}$(xhttpPublicPath)/ (${file})"
     fi
 }
@@ -1369,13 +1386,18 @@ removeAllPanelXhttpLocations() {
 # path, e.g. a return/rewrite written directly into the site config.
 checkPanelXhttpReachable() {
     local result code
-    [[ -n "${btDomain}" ]] || return 0
+    [[ -n "${btDomain}" && "${panelXhttpInstalled}" == "true" ]] || return 0
     command -v curl >/dev/null 2>&1 || return 0
     result=$(curl -sk --max-time 5 --resolve "${btDomain}:443:127.0.0.1" -o /dev/null \
-        -w '%{http_code} %{redirect_url}' "https://${btDomain}$(xhttpPublicPath)/") || return 0
+        -w '%{http_code} %{http_version} %{redirect_url}' "https://${btDomain}$(xhttpPublicPath)/") || return 0
     code=${result%% *}
+    result=${result#* }
+    if [[ "${result%% *}" == "1.1" ]]; then
+        echoContent yellow " ---> 站点 ${btDomain} 未开启 HTTP/2，XHTTP 链接将使用 HTTP/1.1；建议在面板中开启 HTTP/2 后重新生成账号链接"
+    fi
+    result=${result#* }
     case ${code} in
-        3??) echoContent red " ---> XHTTP 路径被站点 ${btDomain} 重定向 (${code} -> ${result#* })，客户端将无法连接" ;;
+        3??) echoContent red " ---> XHTTP 路径被站点 ${btDomain} 重定向 (${code} -> ${result})，客户端将无法连接" ;;
         404) echoContent red " ---> XHTTP 路径未到达 Xray（站点 ${btDomain} 返回 404），客户端将无法连接" ;;
         *) return 0 ;;
     esac
@@ -1421,26 +1443,207 @@ check1Panel() {
         fi
     fi
 }
+# Decoy sites. The pages are built with Astro in xray/decoy-sites/ (one zip
+# per site in its dist/ directory) and hold __KEY__ placeholders. Names,
+# colours, cities and dates are filled in per install, so servers using the
+# same site do not serve identical pages.
+
+decoySiteBase=https://raw.githubusercontent.com/z9wen/vps-scripts/main/xray/decoy-sites/dist
+
+# Menu label and site name (dist/<site>.zip), in menu order.
+nginxTemplates=(
+    "企业官网 · 供应链软件|corp-cn"
+    "Company site · engineering consultancy|corp-en"
+    "游戏工作室|game-studio"
+    "技术博客|tech-blog"
+    "生活随笔博客|life-blog"
+    "资源节点（如 vod-s1.域名）|resource-node"
+)
+
+# One of the arguments, at random.
+decoyPick() {
+    local -a options=("$@")
+    echo "${options[RANDOM % ${#options[@]}]}"
+}
+
+# Date $1 days ago as YYYY-MM-DD (GNU date; BSD date for local tests).
+decoyDate() {
+    local seconds=$(($(date +%s) - $1 * 86400))
+    date -d "@${seconds}" +%Y-%m-%d 2>/dev/null || date -r "${seconds}" +%Y-%m-%d
+}
+
+# Replace __KEY__ placeholders in every page (and JSON file) under
+# directory $1 with the KEY=value arguments. Values come from the lists
+# below or the domain: none contains "|" or "&".
+decoyFill() {
+    local dir=$1 pair page
+    local -a expressions=()
+    shift
+    for pair in "$@"; do
+        expressions+=(-e "s|__${pair%%=*}__|${pair#*=}|g")
+    done
+    while IFS= read -r page; do
+        sed "${expressions[@]}" "${page}" >"${page}.tmp" && mv -f "${page}.tmp" "${page}"
+    done < <(find "${dir}" -type f \( -name '*.html' -o -name '*.json' \))
+}
+
+# The resource node's name and service, from the domain it is served on:
+# vod-s1.example.com is node "vod-s1" of a video edge. A bare domain gets a
+# generic edge name. Prints NODE, KIND, SERVICE and SERVICE_ID lines.
+decoyResourceNode() {
+    local host=$1 node
+    node=${host%%.*}
+    if [[ "${host}" != *.*.* || ! "${node}" =~ ^[a-z0-9-]+$ ]]; then
+        node="edge-$(printf '%02d' $((1 + RANDOM % 24)))"
+    fi
+    echo "NODE=${node}"
+    case ${node} in
+        vod* | video* | media* | stream* | live* | play*)
+            echo "KIND=Media Edge Node"
+            echo "SERVICE=VOD edge · HLS / DASH segments"
+            echo "SERVICE_ID=vod"
+            ;;
+        img* | image* | pic* | static* | cdn* | assets* | res*)
+            echo "KIND=Static Edge Node"
+            echo "SERVICE=Static assets · images, scripts, styles"
+            echo "SERVICE_ID=static"
+            ;;
+        dl* | download* | mirror* | files* | pkg* | update*)
+            echo "KIND=Download Node"
+            echo "SERVICE=Downloads · packages and large files"
+            echo "SERVICE_ID=download"
+            ;;
+        *)
+            echo "KIND=Edge Node"
+            echo "SERVICE=Edge cache · cached content"
+            echo "SERVICE_ID=edge"
+            ;;
+    esac
+}
+
+# The placeholder values of site $1, one KEY=value per line.
+decoySiteValues() {
+    local year
+    year=$(date +%Y)
+    echo "DOMAIN=${domain:-${currentHost:-localhost}}"
+    echo "YEAR=${year}"
+    echo "TODAY=$(decoyDate 0)"
+    case $1 in
+        corp-cn)
+            echo "NAME=$(decoyPick 澜舟科技 青禾数据 启明云链 远帆智能 栖木软件 观潮信息)"
+            echo "PRODUCT=$(decoyPick 舟仓 禾链 明仓 帆运 木栈 潮汐)"
+            echo "CITY=$(decoyPick 上海市徐汇区 杭州市西湖区 苏州市工业园区 深圳市南山区 成都市高新区 武汉市东湖高新区)"
+            echo "HUE=$(decoyPick 168 196 212 152 228)"
+            ;;
+        corp-en)
+            echo "NAME=$(decoyPick "Halden Systems" "Brightwater Analytics" "Kestrel Works" "Ardent Ridge" "Lowmoor Engineering" "Fenwick and Hale")"
+            echo "CITY=$(decoyPick Rotterdam Toronto Melbourne Edinburgh Copenhagen Wellington)"
+            echo "HUE=$(decoyPick 222 205 260 190 18)"
+            ;;
+        game-studio)
+            echo "NAME=$(decoyPick 雾港互动 拾光游戏 星屿工作室 潮声游戏 远山互动 夜航工作室)"
+            echo "NAME_EN=$(decoyPick Harborfog "Lumen Pier" "Isle Seven" Tidewalk "Far Ridge" "Night Ferry")"
+            # The featured game and its one-line story are picked together.
+            local -a games=(
+                "灯塔守望者|一座在雾里亮了一百年的灯塔，一个刚来报到的守望者。白天修补零件、整理航海日志，夜里点亮灯光，等那些迷路的船回来。"
+                "回声群岛|七座小岛，一个只能听见回声的向导。顺着声音找到失散的岛民，拼出群岛沉默了二十年的原因。"
+                "最后一班渡轮|港口明天就要关闭，你是最后一班渡轮的船长。一晚的航程，十二位乘客，每个人都带着一个没说出口的故事。"
+                "雾中邮差|起雾的小镇只剩下你一个邮差。挨家挨户送完积压的信，也慢慢读懂了这座小镇为什么总是起雾。"
+                "沉睡的星图|外婆留下一张画满星星的旧地图。照着它走遍海边的灯塔和山顶的观测站，找回她年轻时看过的那片星空。"
+            )
+            local game
+            game=$(decoyPick "${games[@]}")
+            echo "GAME1=${game%%|*}"
+            echo "GAME1_STORY=${game#*|}"
+            echo "GAME2=$(decoyPick 小镇面包房 风筝与少年 纸箱宇宙 山居手记)"
+            echo "GAME3=$(decoyPick 代号：潮汐 代号：北极星 代号：远航 代号：萤火)"
+            echo "HUE=$(decoyPick 265 200 330 160 25)"
+            echo "DATE1=$(decoyDate $((5 + RANDOM % 9)))"
+            echo "DATE2=$(decoyDate $((24 + RANDOM % 20)))"
+            echo "DATE3=$(decoyDate $((60 + RANDOM % 30)))"
+            echo "DATE4=$(decoyDate $((110 + RANDOM % 40)))"
+            ;;
+        tech-blog)
+            echo "BLOG=$(decoyPick 折腾札记 慢慢写代码 半夜的终端 一行一行 工具箱 后端随手记)"
+            echo "AUTHOR=$(decoyPick 阿木 小舟 林间 老陈 南风 一川)"
+            echo "HUE=$(decoyPick 210 150 20 280 190)"
+            echo "DATE1=$(decoyDate $((3 + RANDOM % 10)))"
+            echo "DATE2=$(decoyDate $((30 + RANDOM % 25)))"
+            echo "DATE3=$(decoyDate $((80 + RANDOM % 40)))"
+            echo "YEAR_1=$((year - 1))"
+            echo "YEAR_2=$((year - 2))"
+            echo "YEAR_3=$((year - 3))"
+            ;;
+        life-blog)
+            echo "BLOG=$(decoyPick 慢慢走 晴天记 周末去哪儿 一碗面的时间 河边散步 小记)"
+            echo "AUTHOR=$(decoyPick 苏苏 阿树 晚晚 小林 七月 叶子)"
+            echo "HUE=$(decoyPick 205 150 12 330 45)"
+            echo "DATE1=$(decoyDate $((2 + RANDOM % 8)))"
+            echo "DATE2=$(decoyDate $((18 + RANDOM % 15)))"
+            echo "DATE3=$(decoyDate $((45 + RANDOM % 30)))"
+            ;;
+        resource-node)
+            local country
+            # The server's country, as Cloudflare sees it; the page shows no addresses.
+            country=$(curl -s --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^loc=//p')
+            decoyResourceNode "${domain:-${currentHost:-localhost}}"
+            echo "BRAND=$(decoyPick "Lattice Networks" "Meridian Media" "Bluefin CDN" "Cobalt Edge" "Northgate Networks" "Arcadia Media")"
+            echo "COUNTRY=${country:-—}"
+            echo "POP=${country:-pop}-$((1 + RANDOM % 4))"
+            echo "ORIGIN=origin-pool-$((1 + RANDOM % 6))"
+            echo "CACHE=$(decoyPick "SSD 960 GB" "SSD 1.92 TB" "NVMe 3.84 TB" "NVMe 7.68 TB")"
+            echo "HIT=$(decoyPick 95.9% 96.8% 97.4% 98.1% 98.6%)"
+            echo "VERSION=$(decoyPick 2.18.6 3.11.9 3.12.4 3.13.1)"
+            echo "SINCE=$(decoyDate $((40 + RANDOM % 160)))"
+            echo "HUE=$(decoyPick 190 150 210 30 265)"
+            ;;
+    esac
+}
+
+# Fill site $2's placeholders in directory $1.
+decoyPrepareSite() {
+    local dir=$1 site=$2 line
+    local -a values=()
+    while IFS= read -r line; do
+        values+=("${line}")
+    done < <(decoySiteValues "${site}")
+    decoyFill "${dir}" "${values[@]}"
+}
+# Archive URL of decoy site number $1 (menu order, see nginxTemplates).
+nginxTemplateArchive() {
+    local number=$1
+    [[ "${number}" =~ ^[0-9]+$ ]] && ((number >= 1 && number <= ${#nginxTemplates[@]})) || return 1
+    echo "${decoySiteBase}/${nginxTemplates[number - 1]#*|}.zip"
+}
+
 deployNginxTemplate() {
-    local templateNumber=$1 stagingDir archive backupDir
+    local templateNumber=$1 url site stagingDir archive siteRoot backupDir
     [[ -n "${nginxStaticPath}" && "${nginxStaticPath}" != "/" ]] || return 1
+    url=$(nginxTemplateArchive "${templateNumber}") || return 1
+    site=${nginxTemplates[templateNumber - 1]#*|}
     stagingDir=$(mktemp -d /tmp/xray-agent-site.XXXXXX) || return 1
     archive="${stagingDir}/site.zip"
 
-    if ! downloadFile "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${templateNumber}.zip" "${archive}" || ! unzip -tq "${archive}" >/dev/null 2>&1; then
+    if ! downloadFile "${url}" "${archive}" --https-only || ! unzip -tq "${archive}" >/dev/null 2>&1; then
         rm -rf "${stagingDir}"
         echoContent red " ---> 伪装站下载或压缩包校验失败，保留现有站点"
         return 1
     fi
-    unzip -oq "${archive}" -d "${stagingDir}/content" || {
+    siteRoot="${stagingDir}/content"
+    unzip -oq "${archive}" -d "${siteRoot}" || {
         rm -rf "${stagingDir}"
         return 1
     }
     rm -f "${archive}"
-    [[ -n $(find "${stagingDir}/content" -mindepth 1 -print -quit 2>/dev/null) ]] || {
+    [[ -f "${siteRoot}/index.html" ]] || {
         rm -rf "${stagingDir}"
+        echoContent red " ---> 伪装站压缩包内容不完整，保留现有站点"
         return 1
     }
+    decoyPrepareSite "${siteRoot}" "${site}"
+    # Marks the directory as our decoy (reinstall prompt, uninstall); nginx
+    # answers /check with 404, so it does not identify this script.
+    : >"${siteRoot}/check"
 
     mkdir -p "${nginxStaticPath}"
     backupDir=$(mktemp -d /tmp/xray-agent-site-backup.XXXXXX) || {
@@ -1449,7 +1652,7 @@ deployNginxTemplate() {
     }
     cp -a "${nginxStaticPath}/." "${backupDir}/" 2>/dev/null || true
     find "${nginxStaticPath}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-    if ! cp -a "${stagingDir}/content/." "${nginxStaticPath}/"; then
+    if ! cp -a "${siteRoot}/." "${nginxStaticPath}/"; then
         find "${nginxStaticPath}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
         cp -a "${backupDir}/." "${nginxStaticPath}/" 2>/dev/null || true
         rm -rf "${stagingDir}" "${backupDir}"
@@ -1475,12 +1678,12 @@ nginxBlog() {
         fi
 
         if [[ "${nginxBlogInstallStatus}" == "y" ]]; then
-            randomNum=$(randomNum 1 9)
+            randomNum=$(randomNum 1 "${#nginxTemplates[@]}")
             deployNginxTemplate "${randomNum}" || return 1
             echoContent green " ---> 添加伪装站点成功"
         fi
     else
-        randomNum=$(randomNum 1 9)
+        randomNum=$(randomNum 1 "${#nginxTemplates[@]}")
         deployNginxTemplate "${randomNum}" || return 1
         echoContent green " ---> 添加伪装站点成功"
     fi
@@ -1623,20 +1826,15 @@ updateNginxBlog() {
     fi
     echoContent red "=============================================================="
     echoContent yellow "# 如需自定义，请手动复制模版文件到 ${nginxStaticPath} \n"
-    echoContent yellow "1.新手引导"
-    echoContent yellow "2.游戏网站"
-    echoContent yellow "3.个人博客01"
-    echoContent yellow "4.企业站"
-    echoContent yellow "5.解锁加密的音乐文件模版[https://github.com/ix64/unlock-music]"
-    echoContent yellow "6.mikutap[https://github.com/HFIProgramming/mikutap]"
-    echoContent yellow "7.企业站02"
-    echoContent yellow "8.个人博客02"
-    echoContent yellow "9.404自动跳转baidu"
-    echoContent yellow "10.重定向网站（不使用伪装站）"
+    local templateIndex redirectOption=$((${#nginxTemplates[@]} + 1))
+    for templateIndex in "${!nginxTemplates[@]}"; do
+        echoContent yellow "$((templateIndex + 1)).${nginxTemplates[templateIndex]%%|*}"
+    done
+    echoContent yellow "${redirectOption}.重定向网站（不使用伪装站）"
     echoContent red "=============================================================="
     read -r -p "请选择:" selectInstallNginxBlogType
 
-    if [[ "${selectInstallNginxBlogType}" == "10" ]]; then
+    if [[ "${selectInstallNginxBlogType}" == "${redirectOption}" ]]; then
         echoContent red "\n=============================================================="
         echoContent skyBlue "📌 重定向配置说明："
         echoContent yellow "• 重定向会替代伪装站点，根路由 / 将直接跳转"
@@ -1676,7 +1874,7 @@ updateNginxBlog() {
             exit 0
         fi
     fi
-    if [[ "${selectInstallNginxBlogType}" =~ ^[1-9]$ ]]; then
+    if nginxTemplateArchive "${selectInstallNginxBlogType}" >/dev/null; then
         deployNginxTemplate "${selectInstallNginxBlogType}" || return 1
         echoContent green " ---> 更换伪站成功"
     else
@@ -1684,6 +1882,16 @@ updateNginxBlog() {
         updateNginxBlog
     fi
 }
+# Where Xray reads its certificate and key.
+xrayTLSDirectory=/opt/xray-agent/tls
+
+# True when certificate file $1 is valid for host name $2. The printed result
+# is used because "openssl x509 -checkhost" exits 0 on a mismatch with
+# OpenSSL 3.0 (Debian 12, Ubuntu 22.04 and 24.04).
+certificateCoversHost() {
+    openssl x509 -in "$1" -noout -checkhost "$2" 2>/dev/null | grep -q " does match certificate"
+}
+
 # Read TLS certificate details
 readAcmeTLS() {
     local readAcmeDomain=
@@ -1719,51 +1927,6 @@ readAcmeTLS() {
     done < <(find "$HOME/.acme.sh" -maxdepth 1 -type d -name "*.${dnsTLSDomain}_ecc" 2>/dev/null)
 }
 
-# Detect native ACME clients
-checkNativeACME() {
-    local nativeACMEType=""
-
-    # Detect certbot
-    if command -v certbot &>/dev/null; then
-        nativeACMEType="certbot"
-        local certbotVersion certCount
-        certbotVersion=$(certbot --version 2>&1 | head -1)
-        echoContent skyBlue "\n检测到 Native ACME 客户端: ${nativeACMEType}"
-        echoContent green "  版本: ${certbotVersion}"
-
-        # Check for existing certificates
-        if [[ -d "/etc/letsencrypt/live" ]]; then
-            certCount=$(find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d | wc -l)
-            if [[ ${certCount} -gt 0 ]]; then
-                echoContent yellow "  已有证书数量: ${certCount}"
-                echoContent skyBlue "\n可用证书域名:"
-                find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | nl
-            fi
-        fi
-        return 0
-    fi
-
-    # Detect other ACME clients
-    if command -v lego &>/dev/null; then
-        nativeACMEType="lego"
-        echoContent skyBlue "\n检测到 Native ACME 客户端: ${nativeACMEType}"
-        return 0
-    fi
-
-    return 1
-}
-
-# Use native ACME certificates (check during initialization)
-# Tell the user an existing ACME client was found. Certificate choice happens
-# later, in the TLS step.
-showNativeACMENotice() {
-    if checkNativeACME; then
-        echoContent skyBlue "\n=============================================================="
-        echoContent yellow "检测到系统已安装 Native ACME 客户端"
-        echoContent yellow "在安装过程中将提供使用现有证书的选项"
-        echoContent red "==============================================================\n"
-    fi
-}
 # Custom email
 customSSLEmail() {
     if echo "$1" | grep -q "validate email"; then
@@ -1790,143 +1953,201 @@ customSSLEmail() {
 
 }
 
-# Locate the acme.sh installed by default by acme_manage.sh; ACME_HOME and PATH are also supported.
-detectLocalAcmeHome() {
-    local candidate=
-    local -a candidates=("${ACME_HOME:-}" "$HOME/.acme.sh" "/root/.acme.sh")
-    for candidate in "${candidates[@]}"; do
-        if [[ -n "${candidate}" && -x "${candidate}/acme.sh" ]]; then
-            echo "${candidate}"
-            return 0
-        fi
-    done
+# Where certbot keeps the current certificate of each lineage.
+certbotLiveDirectory=/etc/letsencrypt/live
 
-    if command -v acme.sh >/dev/null 2>&1; then
-        candidate=$(dirname "$(readlink -f "$(command -v acme.sh)")")
-        if [[ -x "${candidate}/acme.sh" ]]; then
-            echo "${candidate}"
-            return 0
+# Every acme.sh home on this host, one per line: $ACME_HOME, the default
+# homes, the homes named by acme.sh cron jobs (installed with --home) and an
+# acme.sh on PATH. All are listed, because the installer itself creates
+# ~/.acme.sh next to a custom home.
+detectLocalAcmeHomes() {
+    local candidate resolved seen=
+    {
+        printf '%s\n' "${ACME_HOME:-}" "$HOME/.acme.sh" /root/.acme.sh
+        crontab -l 2>/dev/null | grep -- '--cron' \
+            | sed -n 's/.*--home[[:space:]]\{1,\}"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p'
+        if command -v acme.sh >/dev/null 2>&1; then
+            dirname "$(readlink -f "$(command -v acme.sh)")"
         fi
-    fi
+    } | while IFS= read -r candidate; do
+        [[ -n "${candidate}" && -x "${candidate}/acme.sh" ]] || continue
+        resolved=$(readlink -f "${candidate}" 2>/dev/null || echo "${candidate}")
+        [[ "${seen}" == *$'\n'"${resolved}"$'\n'* ]] && continue
+        seen+=$'\n'"${resolved}"$'\n'
+        echo "${resolved}"
+    done
+}
+
+# Certificates issued on this host, one per line as
+# "<name>\t<kind>\t<certificate>\t<key>\t<acme home>"; kind is ECC or RSA for
+# acme.sh and certbot for certbot (no acme home). acme.sh keeps ECC
+# certificates in <domain>_ecc and RSA ones in <domain>; a certificate for
+# several names (acme_manage.sh: example.com plus *.example.com) lives under
+# the first one.
+localCertificateEntries() {
+    local acmeHome conf certDir certDomain kind
+    while IFS= read -r acmeHome; do
+        while read -r conf; do
+            certDir=$(dirname "${conf}")
+            certDomain=$(basename "${conf}" .conf)
+            # Also skips <domain>.csr.conf
+            [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certDomain}.key" ]] || continue
+            kind=RSA
+            [[ "$(basename "${certDir}")" == *_ecc ]] && kind=ECC
+            printf '%s\t%s\t%s\t%s\t%s\n' "${certDomain}" "${kind}" "${certDir}/fullchain.cer" "${certDir}/${certDomain}.key" "${acmeHome}"
+        done < <(find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | sort)
+    done < <(detectLocalAcmeHomes)
+
+    for certDir in "${certbotLiveDirectory}"/*/; do
+        certDir=${certDir%/}
+        [[ -s "${certDir}/fullchain.pem" && -s "${certDir}/privkey.pem" ]] || continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "${certDir}")" certbot "${certDir}/fullchain.pem" "${certDir}/privkey.pem" ""
+    done
+}
+
+# Record entry fields $1-$5 (see localCertificateEntries) as the certificate to use.
+setManagedCertificate() {
+    acmeManagedSourceDomain=$1
+    acmeManagedCertFile=$3
+    acmeManagedKeyFile=$4
+    acmeManagedHome=$5
+    acmeManagedCertSelected=true
+}
+
+# Select an unexpired certificate that covers domain $1, as
+# selectLocalAcmeCertificate does. Used when the domain was typed in instead
+# of picked from the list.
+findLocalAcmeCertificateFor() {
+    local name kind certFile keyFile acmeHome
+    while IFS=$'\t' read -r name kind certFile keyFile acmeHome; do
+        openssl x509 -in "${certFile}" -noout -checkend 0 >/dev/null 2>&1 || continue
+        certificateCoversHost "${certFile}" "$1" || continue
+        setManagedCertificate "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}"
+        return 0
+    done < <(localCertificateEntries)
     return 1
 }
 
-# Select an RSA/ECC certificate from the acme.sh certificate config directory.
+# "<name> [<kind>]", plus the acme.sh home when it is not the default one.
+describeCertificateEntry() {
+    local description="$1 [$2]"
+    [[ -n "$5" && "$5" != "$(readlink -f "$HOME/.acme.sh" 2>/dev/null)" ]] && description+=" ${5}"
+    echo "${description}"
+}
+
+# Choose one of the certificates issued on this host (acme.sh or certbot).
 selectLocalAcmeCertificate() {
-    local acmeHome=
-    acmeHome=$(detectLocalAcmeHome) || return 1
+    local -a entries=()
+    local entry
+    while IFS= read -r entry; do
+        entries+=("${entry}")
+    done < <(localCertificateEntries)
+    ((${#entries[@]} > 0)) || return 1
 
-    local -a certDomains=()
-    local -a certDirs=()
-    local -a certEcc=()
-    local conf certDir certDomain eccLabel
-    while read -r conf; do
-        certDir=$(dirname "${conf}")
-        certDomain=$(basename "${conf}" .conf)
-        [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certDomain}.key" ]] || continue
-
-        if [[ "$(basename "${certDir}")" == *_ecc ]]; then
-            certEcc+=(true)
-        else
-            certEcc+=(false)
-        fi
-        certDomains+=("${certDomain}")
-        certDirs+=("${certDir}")
-    done < <(find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | sort)
-
-    if ((${#certDomains[@]} == 0)); then
-        return 1
-    fi
-
-    echoContent skyBlue "\n---------- acme.sh 已签发证书 ----------"
-    local i
-    for i in "${!certDomains[@]}"; do
-        eccLabel=RSA
-        [[ "${certEcc[$i]}" == "true" ]] && eccLabel=ECC
-        echoContent yellow "$((i + 1)). ${certDomains[$i]} [${eccLabel}]"
+    local i name kind certFile keyFile acmeHome
+    echoContent skyBlue "\n---------- 本机已签发证书 (acme.sh / certbot) ----------"
+    for i in "${!entries[@]}"; do
+        IFS=$'\t' read -r name kind certFile keyFile acmeHome <<<"${entries[$i]}"
+        echoContent yellow "$((i + 1)). $(describeCertificateEntry "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}")"
     done
-    echoContent skyBlue "----------------------------------------"
-    read -r -p "是否使用以上 acme.sh 证书？[y/n]:" useAcmeManagedCert
+    echoContent skyBlue "--------------------------------------------------------"
+    read -r -p "是否使用以上证书？[y/n]:" useAcmeManagedCert
     [[ "${useAcmeManagedCert}" == "y" ]] || return 1
 
     local selectedIndex=
     read -r -p "请选择证书编号:" selectedIndex
-    if [[ ! "${selectedIndex}" =~ ^[0-9]+$ ]] || ((selectedIndex < 1 || selectedIndex > ${#certDomains[@]})); then
+    if [[ ! "${selectedIndex}" =~ ^[0-9]+$ ]] || ((selectedIndex < 1 || selectedIndex > ${#entries[@]})); then
         echoContent red " ---> 证书编号无效"
         return 1
     fi
-    selectedIndex=$((selectedIndex - 1))
-
-    acmeManagedHome=${acmeHome}
-    acmeManagedSourceDomain=${certDomains[$selectedIndex]}
-    acmeManagedEcc=${certEcc[$selectedIndex]}
+    IFS=$'\t' read -r name kind certFile keyFile acmeHome <<<"${entries[$((selectedIndex - 1))]}"
 
     local serviceDomain=
-    read -r -p "请输入 Xray 使用的域名[默认:${acmeManagedSourceDomain}，通配符证书可填子域名]:" serviceDomain
-    serviceDomain=${serviceDomain:-${acmeManagedSourceDomain}}
+    read -r -p "请输入 Xray 使用的域名[默认:${name}，通配符证书可填子域名]:" serviceDomain
+    serviceDomain=${serviceDomain:-${name}}
 
-    while ! openssl x509 -in "${certDirs[$selectedIndex]}/fullchain.cer" -noout -checkhost "${serviceDomain}" >/dev/null 2>&1; do
+    while ! certificateCoversHost "${certFile}" "${serviceDomain}"; do
         echoContent red " ---> 所选证书不包含域名 ${serviceDomain}"
-        read -r -p "请重新输入证书覆盖的域名，输入 q 取消:" serviceDomain
+        # End of input cancels too, instead of asking forever
+        read -r -p "请重新输入证书覆盖的域名，输入 q 取消:" serviceDomain || return 1
         [[ "${serviceDomain}" == "q" ]] && return 1
     done
 
-    acmeManagedCertSelected=true
+    setManagedCertificate "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}"
     domain=${serviceDomain}
-    echoContent green " ---> 已选择 ${acmeManagedSourceDomain} 证书，Xray域名: ${domain}"
+    echoContent green " ---> 已选择 ${name} 证书，Xray域名: ${domain}"
     return 0
 }
 
-# Copy the certificate using the official acme.sh deploy interface, so later renewals update the Xray files automatically.
+# Value of key $1 in acme_managed.conf (written by deployLocalAcmeCertificate).
+acmeManagedSetting() {
+    awk -v key="$1" 'index($0, key "=") == 1 {print substr($0, length(key) + 2); exit}' \
+        "${xrayTLSDirectory}/acme_managed.conf" 2>/dev/null
+}
+
+# Copy certificate $1 and key $2 to the files Xray reads for domain $3,
+# unless they are already identical. Sets acmeManagedCertChanged=true when
+# the files were replaced.
+syncAcmeManagedCertificate() {
+    local sourceCert=$1 sourceKey=$2 serviceDomain=$3
+    local certFile="${xrayTLSDirectory}/${serviceDomain}.crt" keyFile="${xrayTLSDirectory}/${serviceDomain}.key"
+    acmeManagedCertChanged=
+
+    if [[ ! -s "${sourceCert}" || ! -s "${sourceKey}" ]]; then
+        echoContent red " ---> 找不到证书: ${sourceCert}"
+        return 1
+    fi
+    cmp -s "${sourceCert}" "${certFile}" && cmp -s "${sourceKey}" "${keyFile}" && return 0
+
+    # Refuse a renewal caught half-way or a certificate re-issued without this name.
+    if ! certificateCoversHost "${sourceCert}" "${serviceDomain}" \
+        || [[ "$(openssl x509 -in "${sourceCert}" -noout -pubkey 2>/dev/null)" != "$(openssl pkey -in "${sourceKey}" -pubout 2>/dev/null)" ]]; then
+        echoContent red " ---> 证书不包含 ${serviceDomain} 或与私钥不匹配，保留现有证书"
+        return 1
+    fi
+
+    mkdir -p "${xrayTLSDirectory}"
+    if ! (umask 077 && cp "${sourceKey}" "${keyFile}.tmp") || ! cp "${sourceCert}" "${certFile}.tmp" \
+        || ! mv -f "${keyFile}.tmp" "${keyFile}" || ! mv -f "${certFile}.tmp" "${certFile}"; then
+        rm -f "${keyFile}.tmp" "${certFile}.tmp"
+        echoContent red " ---> 复制证书失败"
+        return 1
+    fi
+    acmeManagedCertChanged=true
+}
+
+# Use the selected certificate: copy it for Xray and record it in
+# acme_managed.conf, from which the daily RenewTLS job copies renewed
+# certificates. The issuing client's own settings are not touched: acme.sh's
+# "--install-cert" keeps a single deploy target per certificate, so it would
+# take over (and an uninstall would break) the target and reload command of
+# another site using the same certificate.
 deployLocalAcmeCertificate() {
-    local certFile="/opt/xray-agent/tls/${domain}.crt"
-    local keyFile="/opt/xray-agent/tls/${domain}.key"
-    local -a installArgs=(
-        "${acmeManagedHome}/acme.sh" --install-cert
-        -d "${acmeManagedSourceDomain}"
-        --fullchain-file "${certFile}"
-        --key-file "${keyFile}"
-        --reloadcmd "if systemctl is-active --quiet xray.service; then systemctl restart xray.service >/dev/null 2>&1 || systemctl start xray.service >/dev/null 2>&1; fi"
-    )
-    [[ "${acmeManagedEcc}" == "true" ]] && installArgs+=(--ecc)
-
-    mkdir -p /opt/xray-agent/tls
-    if ! "${installArgs[@]}"; then
-        echoContent red " ---> 从 acme.sh 部署证书失败"
+    if ! syncAcmeManagedCertificate "${acmeManagedCertFile}" "${acmeManagedKeyFile}" "${domain}"; then
+        echoContent red " ---> 部署证书失败"
         return 1
     fi
-    chmod 600 "${keyFile}"
-
-    if [[ ! -s "${certFile}" || ! -s "${keyFile}" ]] || ! openssl x509 -in "${certFile}" -noout -checkhost "${domain}" >/dev/null 2>&1; then
-        echoContent red " ---> 部署后的证书无效或不包含 ${domain}"
-        return 1
-    fi
-
-    cat <<EOF >/opt/xray-agent/tls/acme_managed.conf
+    cat <<EOF >"${xrayTLSDirectory}/acme_managed.conf"
 ACME_HOME=${acmeManagedHome}
 SOURCE_DOMAIN=${acmeManagedSourceDomain}
 SERVICE_DOMAIN=${domain}
-ECC=${acmeManagedEcc}
+CERT_FILE=${acmeManagedCertFile}
+KEY_FILE=${acmeManagedKeyFile}
 EOF
-    echoContent green " ---> 已从 acme.sh 部署证书到 ${certFile}"
-    echoContent green " ---> acme.sh 续期后会自动更新证书并重载 Xray"
+    local client=acme.sh
+    [[ -z "${acmeManagedHome}" ]] && client=certbot
+    echoContent green " ---> 已复制证书到 ${xrayTLSDirectory}/${domain}.crt"
+    echoContent green " ---> ${client} 续期后，每日定时任务会同步新证书并重启 Xray"
 }
 
-# Kept for backward compatibility: list the acme.sh certificates available on this host.
+# List the certificates issued on this host.
 listLocalAcmeCertificates() {
-    local acmeHome=
-    acmeHome=$(detectLocalAcmeHome) || return 1
-    echoContent skyBlue "\n---------- 本地 acme.sh 证书 ----------"
-    find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | while read -r conf; do
-        local certDir certName certType
-        certDir=$(dirname "${conf}")
-        certName=$(basename "${conf}" .conf)
-        [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certName}.key" ]] || continue
-        certType=RSA
-        [[ "$(basename "${certDir}")" == *_ecc ]] && certType=ECC
-        echoContent yellow " - ${certName} [${certType}]"
-    done
-    echoContent skyBlue "--------------------------------------"
+    local name kind certFile keyFile acmeHome
+    echoContent skyBlue "\n---------- 本机已签发证书 ----------"
+    while IFS=$'\t' read -r name kind certFile keyFile acmeHome; do
+        echoContent yellow " - $(describeCertificateEntry "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}")"
+    done < <(localCertificateEntries)
+    echoContent skyBlue "------------------------------------"
 }
 
 # Choose the SSL installation type
@@ -2026,27 +2247,11 @@ acmeInstallSSL() {
 installTLS() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 申请TLS证书\n"
 
-    # Check whether a Native ACME certificate is used
-    if [[ "${nativeACMEEnabled}" == "true" ]]; then
-        echoContent green " ---> 使用 Native ACME 证书"
-        echoContent green " ---> 证书路径: ${nativeCertPath}"
-        echoContent green " ---> 密钥路径: ${nativeKeyPath}"
-
-        # Verify that the certificate files exist
-        if [[ -f "/opt/xray-agent/tls/${domain}.crt" && -f "/opt/xray-agent/tls/${domain}.key" ]]; then
-            echoContent green " ---> Native ACME 证书已就绪"
-            return 0
-        else
-            echoContent red " ---> Native ACME 证书软链接创建失败"
-            exit 0
-        fi
-    fi
-
     readAcmeTLS
     local tlsDomain=${domain}
 
     if [[ "${acmeManagedCertSelected}" == "true" ]]; then
-        echoContent green " ---> 使用 acme_manage.sh / acme.sh 已签发证书"
+        echoContent green " ---> 使用本机已签发的证书: ${acmeManagedSourceDomain}"
         if ! deployLocalAcmeCertificate; then
             exit 1
         fi
@@ -2083,6 +2288,14 @@ installTLS() {
         fi
 
     elif [[ -d "$HOME/.acme.sh" ]] && [[ ! -f "$HOME/.acme.sh/${tlsDomain}_ecc/${tlsDomain}.cer" || ! -f "$HOME/.acme.sh/${tlsDomain}_ecc/${tlsDomain}.key" ]]; then
+        # The domain was typed in rather than picked from the list: an
+        # existing certificate covering it (e.g. example.com plus
+        # *.example.com) is used instead of issuing a new one.
+        if findLocalAcmeCertificateFor "${tlsDomain}"; then
+            echoContent green " ---> 检测到覆盖 ${tlsDomain} 的已签发证书: ${acmeManagedSourceDomain}"
+            deployLocalAcmeCertificate || exit 1
+            return 0
+        fi
         local -a localAcmeDirs=()
         mapfile -t localAcmeDirs < <(find "$HOME/.acme.sh" -maxdepth 1 -type d -name "*_ecc" 2>/dev/null)
         if ((${#localAcmeDirs[@]} > 0)); then
@@ -2133,10 +2346,8 @@ installTLS() {
 installCronTLS() {
     if [[ -z "${btDomain}" ]]; then
         echoContent skyBlue "\n进度 $1/${totalProgress} : 添加定时维护证书"
-        if [[ "${acmeManagedCertSelected}" == "true" || -f "/opt/xray-agent/tls/acme_managed.conf" ]]; then
-            echoContent green " ---> 证书由 acme.sh 管理，保留 acme.sh 原有续期任务"
-            echoContent green " ---> 续期部署完成后会自动重载 Xray"
-            return 0
+        if [[ "${acmeManagedCertSelected}" == "true" || -f "${xrayTLSDirectory}/acme_managed.conf" ]]; then
+            echoContent green " ---> 证书由 acme.sh / certbot 续期，定时任务每日同步新证书并重启 Xray"
         fi
         crontab -l >/opt/xray-agent/backup_crontab.cron 2>/dev/null || true
         local historyCrontab
@@ -2155,17 +2366,35 @@ renewalTLS() {
         echoContent skyBlue "\n进度  $1/1 : 更新证书"
     fi
 
-    if [[ -f "/opt/xray-agent/tls/acme_managed.conf" ]]; then
-        local managedAcmeHome=
-        managedAcmeHome=$(awk -F= '$1 == "ACME_HOME" {sub(/^ACME_HOME=/, ""); print; exit}' /opt/xray-agent/tls/acme_managed.conf)
-        if [[ -x "${managedAcmeHome}/acme.sh" ]]; then
+    if [[ -f "${xrayTLSDirectory}/acme_managed.conf" ]]; then
+        local managedAcmeHome managedCertFile managedKeyFile managedSourceDirectory
+        managedAcmeHome=$(acmeManagedSetting ACME_HOME)
+        managedCertFile=$(acmeManagedSetting CERT_FILE)
+        managedKeyFile=$(acmeManagedSetting KEY_FILE)
+        if [[ -z "${managedCertFile}" ]]; then
+            # Written before CERT_FILE existed: always acme.sh
+            managedSourceDirectory="${managedAcmeHome}/$(acmeManagedSetting SOURCE_DOMAIN)"
+            [[ "$(acmeManagedSetting ECC)" == "true" ]] && managedSourceDirectory+="_ecc"
+            managedCertFile="${managedSourceDirectory}/fullchain.cer"
+            managedKeyFile="${managedSourceDirectory}/$(acmeManagedSetting SOURCE_DOMAIN).key"
+        fi
+        if [[ -z "${managedAcmeHome}" ]]; then
+            echoContent green " ---> 证书由 certbot 自动续期，检查是否有新证书"
+        elif [[ -x "${managedAcmeHome}/acme.sh" ]]; then
             echoContent green " ---> 使用 acme.sh 原有配置检查并续期证书"
             "${managedAcmeHome}/acme.sh" --cron --home "${managedAcmeHome}"
-            echoContent green " ---> acme.sh 证书维护完成"
-            return 0
+        else
+            echoContent red " ---> 找不到已登记的 acme.sh: ${managedAcmeHome}/acme.sh"
+            return 1
         fi
-        echoContent red " ---> 找不到已登记的 acme.sh: ${managedAcmeHome}/acme.sh"
-        return 1
+        syncAcmeManagedCertificate "${managedCertFile}" "${managedKeyFile}" "$(acmeManagedSetting SERVICE_DOMAIN)" || return 1
+        # Only a running Xray is restarted; an install starts it after writing its config.
+        if [[ "${acmeManagedCertChanged}" == "true" ]] && systemctl is-active --quiet xray.service 2>/dev/null; then
+            echoContent green " ---> 证书已更新，重启 Xray"
+            restartXray || return 1
+        fi
+        echoContent green " ---> 证书维护完成"
+        return 0
     fi
 
     readAcmeTLS
@@ -2694,8 +2923,20 @@ warnRealityClientChange() {
     local from=$1 to=$2
     [[ -f "${configPath}07_VLESS_vision_reality_inbounds.json" ]] || return 0
     if xrayVersionAtLeast "${to}" "v26.9.8" && ! xrayVersionAtLeast "${from:-v0}" "v26.9.8"; then
-        echoContent yellow " ---> 注意: v26.9.8 起 REALITY 只接受带 X25519MLKEM768 的客户端，Xray 内核客户端不受影响，sing-box/Clash Meta 客户端可能无法连接 REALITY"
+        echoContent yellow " ---> 注意: v26.9.8 起 REALITY 只接受带 X25519MLKEM768 的客户端"
+        realityClientNotice force
     fi
+}
+
+# Which clients can use REALITY on a core that requires X25519MLKEM768
+# (tested: sing-box 1.14.4 has no way to send it; mihomo needs
+# support-x25519mlkem768, which the Clash Meta subscription sets but a
+# vless:// link cannot carry). Usage: realityClientNotice [force]
+realityClientNotice() {
+    if [[ "${1:-}" != "force" ]]; then
+        xrayVersionAtLeast "$(installedXrayVersion)" "v26.9.8" || return 0
+    fi
+    echoContent yellow " ---> REALITY: Xray 内核客户端（v2rayN 等）和 Clash Meta 订阅可用；sing-box、以及直接导入分享链接的 Clash Meta/mihomo 无法连接"
 }
 
 # Usage: updateXray [stable|prerelease|<tag>]
@@ -4115,6 +4356,10 @@ showAccounts() {
         local xhttpPort
         xhttpPort=$(cat "${xhttpStateFile}" 2>/dev/null)
         xhttpPort=${xhttpPort:-${currentDefaultPort}}
+        currentXhttpAlpn=$(xhttpEntryAlpn "${xhttpPort}")
+        if [[ "${currentXhttpAlpn}" == "http/1.1" ]]; then
+            echoContent yellow " ---> 入口 ${currentHost}:${xhttpPort} 未开启 HTTP/2（面板站点），直连链接使用 HTTP/1.1；建议在面板中开启 HTTP/2\n"
+        fi
         inboundUsers "${configPath}14_VLESS_XHTTP_TLS_inbounds.json" "${accountId}" | while read -r user; do
             local email count=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -4143,6 +4388,7 @@ showAccounts() {
     if echo ${currentInstallProtocolType} | grep -q ",3," \
         && [[ -n "$(inboundUsers "${configPath}07_VLESS_vision_reality_inbounds.json" "${accountId}")" ]]; then
         echoContent skyBlue "============================= VLESS reality_vision [推荐]  ==============================\n"
+        realityClientNotice
         inboundUsers "${configPath}07_VLESS_vision_reality_inbounds.json" "${accountId}" | while read -r user; do
             local email=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -4157,6 +4403,7 @@ showAccounts() {
     if hasProtocol "${currentInstallProtocolType}" 12 \
         && [[ -n "$(inboundUsers "${configPath}12_VLESS_XHTTP_inbounds.json" "${accountId}")" ]]; then
         echoContent skyBlue "\n============================ VLESS XHTTP Reality [无需域名] ============================\n"
+        realityClientNotice
         inboundUsers "${configPath}12_VLESS_XHTTP_inbounds.json" "${accountId}" | while read -r user; do
             local email=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -4170,6 +4417,30 @@ showAccounts() {
 # Percent-encode a string for URLs (share links, QR codes).
 urlEncode() {
     jq -rn --arg value "$1" '$value | @uri'
+}
+
+# ALPN for XHTTP links to the entry at local port $1 (the domain's SNI):
+# "http/1.1" when it only speaks HTTP/1.1 (a panel site without HTTP/2),
+# otherwise "h2". Xray picks its XHTTP transport from the alpn setting, so
+# an h2-only link fails against an HTTP/1.1-only site.
+xhttpEntryAlpn() {
+    local version
+    version=$(curl -sk --max-time 3 --resolve "${currentHost}:$1:127.0.0.1" -o /dev/null \
+        -w '%{http_version}' "https://${currentHost}:$1/" 2>/dev/null)
+    if [[ "${version}" == "1.1" ]]; then
+        echo "http/1.1"
+    else
+        echo "h2"
+    fi
+}
+
+# Host part of a share link: an IPv6 literal (IPv6-only hosts) needs brackets.
+urlHostPart() {
+    if [[ "$1" == *:* ]]; then
+        echo "[$1]"
+    else
+        echo "$1"
+    fi
 }
 initSubscribeLocalConfig() {
     rm -rf /opt/xray-agent/subscribe_local/sing-box/*
@@ -4221,7 +4492,7 @@ EOF
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/opt/xray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 VLESS(VLESS+TCP+TLS_Vision)"
-        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=vless%3A%2F%2F${id}%40${currentHost}%3A${port}%3Fencryption%3Dnone%26fp%3Dchrome%26security%3Dtls%26type%3Dtcp%26${currentHost}%3D${currentHost}%26headerType%3Dnone%26sni%3D${currentHost}%26flow%3Dxtls-rprx-vision%23${email}\n"
+        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "vless://${id}@${currentHost}:${port}?encryption=none&security=tls&type=tcp&host=${currentHost}&fp=chrome&headerType=none&sni=${currentHost}&flow=xtls-rprx-vision#${email}")\n"
 
     elif [[ "${type}" == "vlessws" ]]; then
 
@@ -4259,12 +4530,17 @@ EOF
 
     elif [[ "${type}" == "vlessXhttp" ]]; then
         # Xray-first: sing-box has no XHTTP, so no sing-box entry is written.
-        local link
-        link="vless://${id}@${add}:${port}?encryption=none&security=tls&type=xhttp&sni=${currentHost}&host=${currentHost}&fp=chrome&alpn=h2&path=$(urlEncode "${path}")&mode=auto#${email}"
+        local link alpn=h2
+        # Through a CDN the client talks HTTP/2 to the CDN; only a direct
+        # link to an HTTP/1.1-only panel site must ask for HTTP/1.1.
+        if [[ "${currentXhttpAlpn:-h2}" == "http/1.1" && "${add}" == "${currentHost}" ]]; then
+            alpn=http/1.1
+        fi
+        link="vless://${id}@${add}:${port}?encryption=none&security=tls&type=xhttp&sni=${currentHost}&host=${currentHost}&fp=chrome&alpn=$(urlEncode "${alpn}")&path=$(urlEncode "${path}")&mode=auto#${email}"
         echoContent yellow " ---> 通用格式(VLESS+XHTTP+TLS)"
         echoContent green "    ${link}\n"
         echoContent yellow " ---> 格式化明文(VLESS+XHTTP+TLS)"
-        echoContent green "    协议类型:VLESS，地址:${add}，SNI/Host:${currentHost}，端口:${port}，用户ID:${id}，安全:tls，传输方式:xhttp，路径:${path}，mode:auto，账户名:${email}\n"
+        echoContent green "    协议类型:VLESS，地址:${add}，SNI/Host:${currentHost}，端口:${port}，用户ID:${id}，安全:tls，传输方式:xhttp，alpn:${alpn}，路径:${path}，mode:auto，账户名:${email}\n"
         echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
@@ -4277,7 +4553,7 @@ EOF
     network: xhttp
     packet-encoding: xudp
     client-fingerprint: chrome
-    alpn: [h2]
+    alpn: [${alpn}]
     servername: ${currentHost}
     xhttp-opts:
       path: ${path}
@@ -4288,18 +4564,22 @@ EOF
         echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
 
     elif [[ "${type}" == "vlessXhttpReality" ]]; then
-        local link pqvParam=
+        # Clash Meta REALITY entries set support-x25519mlkem768: Xray v26.9.8+
+        # servers reject REALITY Client Hellos without X25519MLKEM768, and
+        # mihomo only sends it with this option (older servers accept both).
+        local link realityAddress pqvParam=
+        realityAddress=$(getPublicIP)
         [[ -n "${currentRealityMldsa65Verify}" && "${currentRealityMldsa65Verify}" != "null" ]] && pqvParam="&pqv=${currentRealityMldsa65Verify}"
-        link="vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&type=xhttp&sni=${xrayVLESSRealityServerName}&fp=chrome&pbk=${currentRealityPublicKey}&sid=6ba85179e30d4fc2${pqvParam}&path=$(urlEncode "${path}")&mode=auto#${email}"
+        link="vless://${id}@$(urlHostPart "${realityAddress}"):${port}?encryption=none&security=reality&type=xhttp&sni=${xrayVLESSRealityServerName}&fp=chrome&pbk=${currentRealityPublicKey}&sid=6ba85179e30d4fc2${pqvParam}&path=$(urlEncode "${path}")&mode=auto#${email}"
         echoContent yellow " ---> 通用格式(VLESS+XHTTP+Reality)"
         echoContent green "    ${link}\n"
         echoContent yellow " ---> 格式化明文(VLESS+XHTTP+Reality)"
-        echoContent green "    协议类型:VLESS reality，地址:$(getPublicIP)，端口:${port}，publicKey:${currentRealityPublicKey}，shortId:6ba85179e30d4fc2，serverName:${xrayVLESSRealityServerName}，传输方式:xhttp，路径:${path}，用户ID:${id}，账户名:${email}\n"
+        echoContent green "    协议类型:VLESS reality，地址:${realityAddress}，端口:${port}，publicKey:${currentRealityPublicKey}，shortId:6ba85179e30d4fc2，serverName:${xrayVLESSRealityServerName}，传输方式:xhttp，路径:${path}，用户ID:${id}，账户名:${email}\n"
         echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
     type: vless
-    server: $(getPublicIP)
+    server: ${realityAddress}
     port: ${port}
     uuid: ${id}
     udp: true
@@ -4313,6 +4593,7 @@ EOF
     reality-opts:
       public-key: ${currentRealityPublicKey}
       short-id: 6ba85179e30d4fc2
+      support-x25519mlkem768: true
 EOF
         echoContent yellow " ---> 二维码 VLESS(VLESS+XHTTP+Reality)"
         echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
@@ -4363,19 +4644,20 @@ EOF
         local realityServerName=${xrayVLESSRealityServerName}
         local publicKey=${currentRealityPublicKey}
         local realityMldsa65Verify=${currentRealityMldsa65Verify}
+        local realityAddress link
+        realityAddress=$(getPublicIP)
+        link="vless://${id}@$(urlHostPart "${realityAddress}"):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}"
 
         echoContent yellow " ---> 通用格式(VLESS+reality+uTLS+Vision)"
-        echoContent green "    vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}\n"
+        echoContent green "    ${link}\n"
 
         echoContent yellow " ---> 格式化明文(VLESS+reality+uTLS+Vision)"
-        echoContent green "协议类型:VLESS reality，地址:$(getPublicIP)，publicKey:${publicKey}，shortId: 6ba85179e30d4fc2，pqv=${realityMldsa65Verify}，serverNames：${realityServerName}，端口:${port}，用户ID:${id}，传输方式:tcp，账户名:${email}\n"
-        cat <<EOF >>"/opt/xray-agent/subscribe_local/default/${user}"
-vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}
-EOF
+        echoContent green "协议类型:VLESS reality，地址:${realityAddress}，publicKey:${publicKey}，shortId: 6ba85179e30d4fc2，pqv=${realityMldsa65Verify}，serverNames：${realityServerName}，端口:${port}，用户ID:${id}，传输方式:tcp，账户名:${email}\n"
+        echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
     type: vless
-    server: $(getPublicIP)
+    server: ${realityAddress}
     port: ${port}
     uuid: ${id}
     network: tcp
@@ -4386,10 +4668,11 @@ EOF
     reality-opts:
       public-key: ${publicKey}
       short-id: 6ba85179e30d4fc2
+      support-x25519mlkem768: true
     client-fingerprint: chrome
 EOF
 
-        singBoxSubscribeLocalConfig=$(jq --arg tag "${email}" --arg server "$(getPublicIP)" --argjson port "${port}" --arg uuid "${id}" \
+        singBoxSubscribeLocalConfig=$(jq --arg tag "${email}" --arg server "${realityAddress}" --argjson port "${port}" --arg uuid "${id}" \
             --arg serverName "${realityServerName}" --arg publicKey "${publicKey}" \
             '. += [{tag:$tag,type:"vless",server:$server,server_port:$port,uuid:$uuid,flow:"xtls-rprx-vision",
                     tls:{enabled:true,server_name:$serverName,utls:{enabled:true,fingerprint:"chrome"},
@@ -4399,7 +4682,7 @@ EOF
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/opt/xray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 VLESS(VLESS+reality+uTLS+Vision)"
-        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=vless%3A%2F%2F${id}%40$(getPublicIP)%3A${port}%3Fencryption%3Dnone%26security%3Dreality%26type%3Dtcp%26sni%3D${realityServerName}%26fp%3Dchrome%26pbk%3D${publicKey}%26sid%3D6ba85179e30d4fc2%26flow%3Dxtls-rprx-vision%23${email}\n"
+        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
 
     fi
 
@@ -4421,6 +4704,21 @@ readNginxSubscribe() {
         fi
     fi
 }
+# True when TCP port $1 cannot host the subscription site: a public Xray
+# inbound uses it, a site of the host nginx listens on it, or another
+# process holds it.
+subscribePortTaken() {
+    local port=$1 file
+    for file in "${configPath}"*inbounds*.json; do
+        [[ -f "${file}" ]] || continue
+        jq -e --argjson port "${port}" \
+            'any(.inbounds[]?; .port == $port and ((.listen // "") | startswith("127.") | not))' \
+            "${file}" >/dev/null 2>&1 && return 0
+    done
+    nginxListensOnPort "${port}" && return 0
+    lsof -i "tcp:${port}" 2>/dev/null | grep -q LISTEN
+}
+
 # Install the subscription service
 installSubscribe() {
     readNginxSubscribe
@@ -4447,15 +4745,29 @@ installSubscribe() {
                 exit 0
             fi
         fi
-        echoContent yellow "开始配置订阅，请输入订阅的端口[默认443]\n"
+        local defaultSubscribePort=443
+        if subscribePortTaken 443; then
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                defaultSubscribePort=$((RANDOM % 20001 + 10000))
+                subscribePortTaken "${defaultSubscribePort}" || break
+            done
+            echoContent yellow "443 端口已被 Xray 或现有网站使用，订阅需要单独的端口"
+        fi
+        echoContent yellow "开始配置订阅，请输入订阅的端口[默认${defaultSubscribePort}]\n"
 
         local subscribePortInput="${subscribePort}"
         if [[ -z "${subscribePortInput}" ]]; then
             read -r -p "端口:" subscribePortInput
-            if [[ -z "${subscribePortInput}" ]]; then
-                subscribePortInput=443
-            fi
+            subscribePortInput=${subscribePortInput:-${defaultSubscribePort}}
         fi
+        # nginx could not start on a port Xray holds (taking the fallback
+        # sites and XHTTP down with it), and a server block for this domain on
+        # a port a site already uses would take over that site.
+        while ! isValidPort "${subscribePortInput}" || subscribePortTaken "${subscribePortInput}"; do
+            echoContent red " ---> 端口 ${subscribePortInput} 不可用（无效，或已被 Xray / 现有网站 / 其他程序使用）"
+            read -r -p "请输入其他端口[默认${defaultSubscribePort}]:" subscribePortInput
+            subscribePortInput=${subscribePortInput:-${defaultSubscribePort}}
+        done
         result=("${subscribePortInput}")
         echo
         echoContent yellow " ---> 开始配置订阅的伪装站点\n"
@@ -4783,17 +5095,17 @@ clashMetaConfig() {
     local url=$1
     local id=$2
     cat <<EOF >"/opt/xray-agent/subscribe/clashMetaProfiles/${id}"
-log-level: debug
+log-level: info
 mode: rule
 ipv6: true
 mixed-port: 7890
-allow-lan: true
-bind-address: "*"
-lan-allowed-ips:
-  - 0.0.0.0/0
-  - ::/0
+# The proxy, controller and DNS listen on localhost only: a LAN-wide proxy
+# and an unauthenticated controller on 0.0.0.0 let anyone on the network
+# (or the internet, with a public IPv6 address) use or reconfigure the
+# client. Enable LAN sharing in the client when it is wanted.
+allow-lan: false
 find-process-mode: strict
-external-controller: 0.0.0.0:9090
+external-controller: 127.0.0.1:9090
 
 geox-url:
   geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
@@ -4826,7 +5138,7 @@ sniffer:
 dns:
   enable: true
   prefer-h3: false
-  listen: 0.0.0.0:1053
+  listen: 127.0.0.1:1053
   ipv6: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
@@ -5776,19 +6088,19 @@ buildRelayTargetChoices() {
             Hysteria2) inboundConfig="${configPath}05_hysteria2_inbounds.json" ;;
             *) continue ;;
         esac
-        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg label "${inboundLabel}" '
-            . + [{selector:{inboundTags:[$tag],users:[]},label:($label + " / 整个入站（全部 UUID/auth）")}]
+        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg labelText "${inboundLabel}" '
+            . + [{selector:{inboundTags:[$tag],users:[]},"label":($labelText + " / 整个入站（全部 UUID/auth）")}]
         ' <<<"${relayTargetChoices}")
         clients=$(jq -c '
             (.inbounds[0].settings.clients // .inbounds[0].settings.users // .inbounds[0].users // [])
             | map(select((.email // "") != ""))
         ' "${inboundConfig}") || return 1
-        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg label "${inboundLabel}" --argjson clients "${clients}" "${relaySelectorJqDefs}"'
+        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg labelText "${inboundLabel}" --argjson clients "${clients}" "${relaySelectorJqDefs}"'
             reduce $clients[] as $client (.;
                 ($client.email | displayUser) as $accountTag |
                 ($client.id // $client.uuid // $client.auth // $client.password // "unknown") as $credential |
                 . + [{selector:{inboundTags:[$tag],users:[$client.email]},
-                    label:($label + " / tag: " + $accountTag + " / UUID/auth: " + $credential)}]
+                    "label":($labelText + " / tag: " + $accountTag + " / UUID/auth: " + $credential)}]
             )
         ' <<<"${relayTargetChoices}")
     done
@@ -5801,7 +6113,7 @@ selectRelayTargets() {
     targetCount=$(jq 'length' <<<"${relayTargetChoices}")
     ((targetCount > 0)) || return 1
     echoContent skyBlue "\n请选择需要链式转发的精确目标"
-    jq -r 'to_entries[] | "\(.key + 1).\(.value.label)"' <<<"${relayTargetChoices}"
+    jq -r 'to_entries[] | "\(.key + 1).\(.value."label")"' <<<"${relayTargetChoices}"
 
     read -r -p "请选择[可多选，例:3,6]:" selection
     selection=${selection//，/,}
@@ -6074,6 +6386,7 @@ ensureRelayStateV2() {
         else
             chmod 600 "${relayStateFile}"
         fi
+        migrateRelayOutboundFiles
         return
     fi
     local migrated
@@ -6093,12 +6406,43 @@ ensureRelayStateV2() {
             del(.inboundTags, .users)
         )]}
     ' "${relayStateFile}") || return 1
-    writeRelayState "${migrated}"
+    writeRelayState "${migrated}" || return 1
     echoContent green " ---> 已将原有中转配置迁移为多入口格式"
+    migrateRelayOutboundFiles
 }
 
 relayProfileFileIsSafe() {
     [[ $1 =~ ^relay_([A-Za-z0-9_]+_)?outbound\.json$ ]]
+}
+
+# Relay outbounds must never become Xray's default outbound. Xray prepends
+# the outbounds of each later config file, so the last file decides the
+# default, unless the file name contains "tail" (appended instead).
+# z_direct_outbound.json normally loads after relay_*.json, but the IPv6
+# global mode replaces it with IPv6_out.json, and a relay outbound would then
+# carry all unmatched traffic. Renames relay_<id>_outbound.json to
+# relay_<id>_tail_outbound.json; sets relayOutboundFilesMigrated=true when
+# something was renamed, so callers can restart Xray.
+migrateRelayOutboundFiles() {
+    relayOutboundFilesMigrated=
+    local file newFile newState
+    while IFS= read -r file; do
+        newFile=${file%outbound.json}tail_outbound.json
+        relayProfileFileIsSafe "${file}" && relayProfileFileIsSafe "${newFile}" || continue
+        # Copy, record, then remove: an interruption never leaves the state
+        # pointing at a missing file or an orphan cleanup deleting the live one.
+        if [[ -f "${configPath}${file}" ]]; then
+            cp -p "${configPath}${file}" "${configPath}${newFile}" || return 1
+        fi
+        newState=$(jq --arg old "${file}" --arg new "${newFile}" \
+            '.profiles |= map(if .outboundFile == $old then .outboundFile = $new else . end)' "${relayStateFile}") || return 1
+        if ! writeRelayState "${newState}"; then
+            rm -f "${configPath}${newFile}"
+            return 1
+        fi
+        rm -f "${configPath}${file}"
+        relayOutboundFilesMigrated=true
+    done < <(jq -r '.profiles[]?.outboundFile // empty | select(test("tail") | not)' "${relayStateFile}")
 }
 
 # Check whether the target selectors are already bound to another upstream.
@@ -6209,7 +6553,7 @@ selectRelayUdpMode() {
 # Add a Shadowsocks or VLESS Reality relay rule from a sing-box JSON subscription.
 setupRelaySubscription() {
     local profileName=$1 profileId=$2
-    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_outbound.json"
+    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_tail_outbound.json"
     selectRelayUdpMode
     local subscriptionUrl tempDir subscriptionFile supportedNodes nodeCount nodeIndex selectedTag generatedOutbound
     read -r -p "请输入 sing-box JSON 订阅地址:" subscriptionUrl
@@ -6253,12 +6597,12 @@ setupRelaySubscription() {
     local profile
     profile=$(jq -n --arg id "${profileId}" --arg name "${profileName}" --argjson selectors "${relaySelectedSelectors}" \
         --arg outboundTag "${outboundTag}" --arg outboundFile "${outboundFile}" --arg url "${subscriptionUrl}" --arg selectedTag "${selectedTag}" \
-        --arg nodeType "${relayBuiltSubscriptionType}" --arg protocol "${relayBuiltProtocol}" --arg label "${relayBuiltLabel}" \
+        --arg nodeType "${relayBuiltSubscriptionType}" --arg protocol "${relayBuiltProtocol}" --arg labelText "${relayBuiltLabel}" \
         --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" --arg udpMode "${relaySelectedUdpMode}" '
         {id:$id,name:$name,source:"subscription",selectors:$selectors,outboundTag:$outboundTag,outboundFile:$outboundFile,
          subscription:{format:"sing-box-json",url:$url,selectedTag:$selectedTag,nodeType:$nodeType},
-         tcp:{mode:"relay",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:""},
-         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:""} else {mode:"direct",protocol:"",label:"直连",address:"",port:"",bbrProfile:""} end)}')
+         tcp:{mode:"relay",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:""},
+         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:""} else {mode:"direct",protocol:"","label":"直连",address:"",port:"",bbrProfile:""} end)}')
     activateRelayProfile "${profile}" "${generatedOutbound}" || {
         rm -rf "${tempDir}"
         return 1
@@ -6437,7 +6781,7 @@ syncRelayRouting() {
 
 setupRelayManual() {
     local profileName=$1 profileId=$2
-    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_outbound.json"
+    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_tail_outbound.json"
     selectRelayUdpMode
     local tempDir generatedOutbound carriesUdp profile
     tempDir=$(mktemp -d /tmp/xray-relay-manual.XXXXXX) || return 1
@@ -6450,11 +6794,11 @@ setupRelayManual() {
     }
     profile=$(jq -n --arg id "${profileId}" --arg name "${profileName}" --argjson selectors "${relaySelectedSelectors}" \
         --arg outboundTag "${outboundTag}" --arg outboundFile "${outboundFile}" --arg protocol "${relayBuiltProtocol}" \
-        --arg label "${relayBuiltLabel}" --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" \
+        --arg labelText "${relayBuiltLabel}" --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" \
         --arg bbrProfile "${relayBuiltBbrProfile}" --arg udpMode "${relaySelectedUdpMode}" '
         {id:$id,name:$name,source:"manual",selectors:$selectors,outboundTag:$outboundTag,outboundFile:$outboundFile,
-         tcp:{mode:"relay",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:$bbrProfile},
-         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:$bbrProfile} else {mode:"direct",protocol:"",label:"直连",address:"",port:"",bbrProfile:""} end)}')
+         tcp:{mode:"relay",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:$bbrProfile},
+         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:$bbrProfile} else {mode:"direct",protocol:"","label":"直连",address:"",port:"",bbrProfile:""} end)}')
     activateRelayProfile "${profile}" "${generatedOutbound}" || {
         rm -rf "${tempDir}"
         return 1
@@ -6473,7 +6817,7 @@ selectRelayDestination() {
 
     echoContent skyBlue "\n请选择目标上游"
     jq -r '.profiles | to_entries[] |
-        "\(.key + 1).\(.value.name) -> \(.value.tcp.label) \(.value.tcp.address):\(.value.tcp.port)"
+        "\(.key + 1).\(.value.name) -> \(.value.tcp."label") \(.value.tcp.address):\(.value.tcp.port)"
     ' "${relayStateFile}"
     newOption=$((count + 1))
     echoContent yellow "${newOption}.新建上游"
@@ -6540,8 +6884,8 @@ showRelayConfig() {
                 ([.value.users[] | displayUser] | join(", "))
              else "全部 UUID" end)
         ) | join("\n")) +
-        "\n   TCP : \(.value.tcp.label) -> \(.value.tcp.address):\(.value.tcp.port)\n" +
-        "   UDP : \(if .value.udp.mode == "shared" then (.value.udp.label + " -> " + .value.udp.address + ":" + .value.udp.port) else "直连" end)\n" +
+        "\n   TCP : \(.value.tcp."label") -> \(.value.tcp.address):\(.value.tcp.port)\n" +
+        "   UDP : \(if .value.udp.mode == "shared" then (.value.udp."label" + " -> " + .value.udp.address + ":" + .value.udp.port) else "直连" end)\n" +
         "   来源: \(if .value.source == "subscription" then "订阅自动更新" else "手动" end)"
     ' "${relayStateFile}"
 }
@@ -6568,12 +6912,20 @@ updateRelaySubscriptionProfile() {
         return 1
     }
     if ! jq -e --arg tag "${selectedTag}" 'any(.[]; .tag == $tag)' <<<"${supportedNodes}" >/dev/null; then
-        selectedTag=$(jq -r --arg nodeType "${preferredNodeType}" 'first(.[] | select(._relayType == $nodeType)).tag // empty' <<<"${supportedNodes}")
-    fi
-    if [[ -z "${selectedTag}" ]]; then
-        echoContent red " ---> 更新后的订阅中没有同类型可用节点，保留旧配置"
-        rm -rf "${tempDir}"
-        return 1
+        # Providers rename nodes (traffic counters, expiry dates in the tag):
+        # follow the same server. Never fall back to "the first node": that
+        # may be another region or an information entry with a fake address.
+        local previousTag=${selectedTag}
+        selectedTag=$(jq -r --arg nodeType "${preferredNodeType}" \
+            --arg server "$(jq -r '.tcp.address // empty' <<<"${profile}")" --arg port "$(jq -r '.tcp.port // empty' <<<"${profile}")" '
+            first(.[] | select(._relayType == $nodeType and .server == $server and (.server_port | tostring) == $port)).tag // empty
+        ' <<<"${supportedNodes}")
+        if [[ -z "${selectedTag}" ]]; then
+            echoContent red " ---> $(jq -r '.name' <<<"${profile}"): 订阅中已找不到节点 ${previousTag}，保留旧配置；如需更换节点请删除该上游后重新添加"
+            rm -rf "${tempDir}"
+            return 1
+        fi
+        echoContent yellow " ---> $(jq -r '.name' <<<"${profile}"): 节点 ${previousTag} 已改名为 ${selectedTag}（服务器不变）"
     fi
     buildRelayOutboundFromSingBoxSubscription "${subscriptionFile}" "${selectedTag}" "${outboundTag}" "${generatedOutbound}" || {
         echoContent red " ---> 更新后的节点参数不完整，保留旧配置"
@@ -6581,14 +6933,14 @@ updateRelaySubscriptionProfile() {
         return 1
     }
     newState=$(jq --arg id "${profileId}" --arg tag "${selectedTag}" --arg nodeType "${relayBuiltSubscriptionType}" \
-        --arg protocol "${relayBuiltProtocol}" --arg label "${relayBuiltLabel}" \
+        --arg protocol "${relayBuiltProtocol}" --arg labelText "${relayBuiltLabel}" \
         --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" '
         .profiles |= map(if .id == $id then
             .subscription.selectedTag = $tag |
             .subscription.nodeType = $nodeType |
-            .tcp.protocol = $protocol | .tcp.label = $label | .tcp.address = $address | .tcp.port = $port |
+            .tcp.protocol = $protocol | .tcp."label" = $labelText | .tcp.address = $address | .tcp.port = $port |
             if .udp.mode == "shared" then
-                .udp.protocol = $protocol | .udp.label = $label | .udp.address = $address | .udp.port = $port
+                .udp.protocol = $protocol | .udp."label" = $labelText | .udp.address = $address | .udp.port = $port
             else . end
         else . end)
     ' "${relayStateFile}") || {
@@ -6629,7 +6981,7 @@ updateRelaySubscription() {
 updateAllRelaySubscriptions() {
     ensureRelayStateV2 || return 1
     local profileId updateFailed=false
-    relaySubscriptionChanged=false
+    relaySubscriptionChanged=${relayOutboundFilesMigrated:-false}
     while read -r profileId; do
         updateRelaySubscriptionProfile "${profileId}" || updateFailed=true
     done < <(jq -r '.profiles[]? | select(.source == "subscription").id' "${relayStateFile}")
@@ -6726,7 +7078,11 @@ manageRelay() {
         echoContent red " ---> 未安装，请使用脚本安装"
         return
     fi
-    ensureRelayStateV2 || return
+    withRelayLock ensureRelayStateV2 || return
+    if [[ "${relayOutboundFilesMigrated}" == "true" ]]; then
+        echoContent yellow " ---> 已调整中转出站文件名，避免中转出站成为默认出站，重启 Xray 生效"
+        restartXray
+    fi
     local relayType profileCount selectorCount
     while true; do
         ensureRelayStateV2 || return
@@ -7437,7 +7793,11 @@ customPortFunction() {
             echoContent yellow "请输入端口[不可与宝塔/aaPanel/1Panel 或其 Nginx 的端口相同，回车随机]"
             read -r -p "端口:" port
             if [[ -z "${port}" ]]; then
-                port=$((RANDOM % 20001 + 10000))
+                # Skip ports already taken (the panel itself, its databases, ...)
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    port=$((RANDOM % 20001 + 10000))
+                    lsof -i "tcp:${port}" 2>/dev/null | grep -q LISTEN || break
+                done
             fi
         else
             echo
@@ -7646,7 +8006,9 @@ installTools() {
 
     # Detect the nginx version and offer to install/uninstall it
     if [[ -n "${selectCustomInstallType}" ]] && ! selectionNeedsTLS "${selectCustomInstallType}"; then
-        echoContent green " ---> 检测到无需依赖Nginx的服务，跳过安装"
+        # REALITY needs neither nginx nor a certificate (acme.sh)
+        echoContent green " ---> 检测到无需依赖Nginx的服务，跳过安装 Nginx 与 acme.sh"
+        return 0
     else
         # Detect the nginx bundled with BT Panel/aaPanel (not in the system PATH, but installed)
         local panelNginxBin=""
@@ -7655,7 +8017,7 @@ installTools() {
         fi
         if ! command -v nginx &>/dev/null && [[ -z "${panelNginxBin}" ]]; then
             echoContent yellow " ---> 未检测到 Nginx，开始安装"
-            installNginxTools
+            installNginxTools || return 1
         else
             local existingConfCount
             existingConfCount=$(find "${nginxConfigPath}" /etc/nginx/sites-enabled -name "*.conf" 2>/dev/null | wc -l)
@@ -7670,41 +8032,41 @@ installTools() {
         fi
     fi
 
-    # Check whether native ACME is used
-    showNativeACMENotice
+    # The panel site's own certificate is used; acme.sh is not needed (and
+    # an unreachable get.acme.sh must not stop a panel install).
+    if [[ -n "${btDomain}" ]]; then
+        echoContent green " ---> 使用面板站点证书，跳过安装 acme.sh"
+        return 0
+    fi
 
-    if [[ "${nativeACMEEnabled}" != "true" ]]; then
-        # Native ACME is not used; install acme.sh
-        if [[ ! -d "$HOME/.acme.sh" ]] || [[ -d "$HOME/.acme.sh" && -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
-            echoContent green " ---> 安装acme.sh"
-            local acmeInstaller="/tmp/acme-install.$$.sh"
-            if ! downloadFile "https://get.acme.sh" "${acmeInstaller}"; then
-                echoContent red " ---> acme.sh 安装脚本下载失败"
-                return 1
-            fi
-            if ! sh "${acmeInstaller}" >/opt/xray-agent/tls/acme.log 2>&1; then
-                rm -f "${acmeInstaller}"
-                echoContent red " ---> acme.sh 安装脚本执行失败"
-                tail -n 100 /opt/xray-agent/tls/acme.log
-                return 1
-            fi
+    # Issues new certificates; existing acme.sh/certbot certificates are offered in the TLS step
+    if [[ ! -d "$HOME/.acme.sh" ]] || [[ -d "$HOME/.acme.sh" && -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
+        echoContent green " ---> 安装acme.sh"
+        local acmeInstaller="/tmp/acme-install.$$.sh"
+        if ! downloadFile "https://get.acme.sh" "${acmeInstaller}"; then
+            echoContent red " ---> acme.sh 安装脚本下载失败"
+            return 1
+        fi
+        if ! sh "${acmeInstaller}" >/opt/xray-agent/tls/acme.log 2>&1; then
             rm -f "${acmeInstaller}"
+            echoContent red " ---> acme.sh 安装脚本执行失败"
+            tail -n 100 /opt/xray-agent/tls/acme.log
+            return 1
+        fi
+        rm -f "${acmeInstaller}"
 
-            if [[ ! -d "$HOME/.acme.sh" ]] || [[ -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
-                echoContent red "  acme安装失败--->"
-                tail -n 100 /opt/xray-agent/tls/acme.log
-                echoContent yellow "错误排查:"
-                echoContent red "  1.获取Github文件失败，请等待Github恢复后尝试，恢复进度可查看 [https://www.githubstatus.com/]"
-                echoContent red "  2.acme.sh脚本出现bug，可查看[https://github.com/acmesh-official/acme.sh] issues"
-                echoContent red "  3.如纯IPv6机器，请设置NAT64,可执行下方命令，如果添加下方命令还是不可用，请尝试更换其他NAT64"
-                echoContent skyBlue "  sed -i \"1i\\\nameserver 2a00:1098:2b::1\\\nnameserver 2a00:1098:2c::1\\\nnameserver 2a01:4f8:c2c:123f::1\\\nnameserver 2a01:4f9:c010:3f02::1\" /etc/resolv.conf"
-                exit 0
-            fi
-        else
-            echoContent green " ---> acme.sh 已安装"
+        if [[ ! -d "$HOME/.acme.sh" ]] || [[ -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
+            echoContent red "  acme安装失败--->"
+            tail -n 100 /opt/xray-agent/tls/acme.log
+            echoContent yellow "错误排查:"
+            echoContent red "  1.获取Github文件失败，请等待Github恢复后尝试，恢复进度可查看 [https://www.githubstatus.com/]"
+            echoContent red "  2.acme.sh脚本出现bug，可查看[https://github.com/acmesh-official/acme.sh] issues"
+            echoContent red "  3.如纯IPv6机器，请设置NAT64,可执行下方命令，如果添加下方命令还是不可用，请尝试更换其他NAT64"
+            echoContent skyBlue "  sed -i \"1i\\\nameserver 2a00:1098:2b::1\\\nnameserver 2a00:1098:2c::1\\\nnameserver 2a01:4f8:c2c:123f::1\\\nnameserver 2a01:4f9:c010:3f02::1\" /etc/resolv.conf"
+            exit 0
         fi
     else
-        echoContent green " ---> 使用 Native ACME 证书，跳过安装 acme.sh"
+        echoContent green " ---> acme.sh 已安装"
     fi
 }
 
@@ -7836,7 +8198,12 @@ runInstall() {
         checkBTPanel
         check1Panel
     fi
-    installTools $((++step))
+    # Nothing is stopped yet; a missing nginx or acme.sh would only fail
+    # after Xray was installed.
+    if ! installTools $((++step)); then
+        echoContent red " ---> 依赖安装失败，已中止安装"
+        return 1
+    fi
 
     if [[ "${needsTLS}" != "true" ]]; then
         echoContent skyBlue "\n进度  $((++step))/${totalProgress} : 仅安装 Reality，跳过域名与证书"
@@ -7848,8 +8215,10 @@ runInstall() {
         installTLS $((++step))
     fi
 
-    # REALITY-only installs do not use nginx; keep the host's sites up.
-    if [[ "${needsTLS}" == "true" ]]; then
+    # REALITY-only installs do not use nginx; keep the host's sites up. A
+    # panel's nginx is not stopped either (no ACME issuance or port probe
+    # needs it): it is reloaded once the config is written.
+    if [[ "${needsTLS}" == "true" && -z "${btDomain}" ]]; then
         handleNginx stop
     fi
     if hasProtocol "${selectCustomInstallType}" 1 || hasProtocol "${selectCustomInstallType}" 12 \
@@ -7874,12 +8243,17 @@ runInstall() {
         updateRedirectNginxConf || abortInstall "无法生成Nginx配置" || return 1
         # Panel sites serve 443 themselves; XHTTP goes through a location there.
         if hasProtocol "${selectCustomInstallType}" 14; then
-            if [[ -n "${btDomain}" ]]; then
+            syncPanelXhttpLocation install
+            # Clients use the panel site's 443 only when our location is in
+            # it; otherwise the Vision port's fallback serves the same path.
+            if [[ "${panelXhttpInstalled}" == "true" ]]; then
                 echo 443 >"${xhttpStateFile}"
             else
+                if [[ -n "${btDomain}" ]]; then
+                    echoContent yellow " ---> 未能接入面板站点，XHTTP 暂经 Xray 端口 ${port} 提供；接入面板站点后重新安装即可改用 443"
+                fi
                 echo "${port}" >"${xhttpStateFile}"
             fi
-            syncPanelXhttpLocation install
         else
             syncPanelXhttpLocation remove
             rm -f "${xhttpStateFile}"
@@ -7888,7 +8262,11 @@ runInstall() {
     fi
 
     restartXray || restartStatus=$?
-    handleNginx start
+    if [[ "${needsTLS}" == "true" && -n "${btDomain}" ]]; then
+        applyPanelNginxConfig
+    else
+        handleNginx start
+    fi
     ((restartStatus == 0)) || return 1
     if hasProtocol "${selectCustomInstallType}" 14; then
         checkPanelXhttpReachable
@@ -7906,9 +8284,12 @@ unInstall() {
     fi
     checkBTPanel
     echoContent yellow " ---> 脚本不会删除acme相关配置，删除请手动执行 [rm -rf /root/.acme.sh]"
-    handleNginx stop
-    if [[ -z $(pgrep -f "nginx") ]]; then
-        echoContent green " ---> 停止Nginx成功"
+    # A panel's nginx keeps serving its sites; it is reloaded at the end.
+    if [[ -z "${btDomain}" ]]; then
+        handleNginx stop
+        if [[ -z $(pgrep -f "nginx") ]]; then
+            echoContent green " ---> 停止Nginx成功"
+        fi
     fi
     if [[ "${coreInstallType}" == "1" ]]; then
         handleXray stop
@@ -7931,7 +8312,11 @@ unInstall() {
         echoContent green " ---> 删除伪装网站完成"
     fi
     # Other sites on the same nginx keep running without our config.
-    restoreStoppedNginx
+    if [[ -n "${btDomain}" ]]; then
+        applyPanelNginxConfig
+    else
+        restoreStoppedNginx
+    fi
 
     rm -rf /usr/bin/xraya
     rm -rf /usr/sbin/xraya
@@ -8097,7 +8482,7 @@ cronFunction() {
 menu() {
     cd "$HOME" || exit
     echoContent red "\n=============================================================="
-    echoContent green "当前版本：v2026.11.10.1794306205"
+    echoContent green "当前版本：v2026.11.17.1794902380"
     echoContent green "描述：Xray 一键安装管理脚本\c"
     showInstallStatus
     echoContent skyBlue "快捷命令：xraya"
