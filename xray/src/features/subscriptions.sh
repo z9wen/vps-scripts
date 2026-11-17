@@ -15,6 +15,21 @@ readNginxSubscribe() {
         fi
     fi
 }
+# True when TCP port $1 cannot host the subscription site: a public Xray
+# inbound uses it, a site of the host nginx listens on it, or another
+# process holds it.
+subscribePortTaken() {
+    local port=$1 file
+    for file in "${configPath}"*inbounds*.json; do
+        [[ -f "${file}" ]] || continue
+        jq -e --argjson port "${port}" \
+            'any(.inbounds[]?; .port == $port and ((.listen // "") | startswith("127.") | not))' \
+            "${file}" >/dev/null 2>&1 && return 0
+    done
+    nginxListensOnPort "${port}" && return 0
+    lsof -i "tcp:${port}" 2>/dev/null | grep -q LISTEN
+}
+
 # Install the subscription service
 installSubscribe() {
     readNginxSubscribe
@@ -41,15 +56,29 @@ installSubscribe() {
                 exit 0
             fi
         fi
-        echoContent yellow "开始配置订阅，请输入订阅的端口[默认443]\n"
+        local defaultSubscribePort=443
+        if subscribePortTaken 443; then
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                defaultSubscribePort=$((RANDOM % 20001 + 10000))
+                subscribePortTaken "${defaultSubscribePort}" || break
+            done
+            echoContent yellow "443 端口已被 Xray 或现有网站使用，订阅需要单独的端口"
+        fi
+        echoContent yellow "开始配置订阅，请输入订阅的端口[默认${defaultSubscribePort}]\n"
 
         local subscribePortInput="${subscribePort}"
         if [[ -z "${subscribePortInput}" ]]; then
             read -r -p "端口:" subscribePortInput
-            if [[ -z "${subscribePortInput}" ]]; then
-                subscribePortInput=443
-            fi
+            subscribePortInput=${subscribePortInput:-${defaultSubscribePort}}
         fi
+        # nginx could not start on a port Xray holds (taking the fallback
+        # sites and XHTTP down with it), and a server block for this domain on
+        # a port a site already uses would take over that site.
+        while ! isValidPort "${subscribePortInput}" || subscribePortTaken "${subscribePortInput}"; do
+            echoContent red " ---> 端口 ${subscribePortInput} 不可用（无效，或已被 Xray / 现有网站 / 其他程序使用）"
+            read -r -p "请输入其他端口[默认${defaultSubscribePort}]:" subscribePortInput
+            subscribePortInput=${subscribePortInput:-${defaultSubscribePort}}
+        done
         result=("${subscribePortInput}")
         echo
         echoContent yellow " ---> 开始配置订阅的伪装站点\n"

@@ -136,7 +136,9 @@ installTools() {
 
     # Detect the nginx version and offer to install/uninstall it
     if [[ -n "${selectCustomInstallType}" ]] && ! selectionNeedsTLS "${selectCustomInstallType}"; then
-        echoContent green " ---> 检测到无需依赖Nginx的服务，跳过安装"
+        # REALITY needs neither nginx nor a certificate (acme.sh)
+        echoContent green " ---> 检测到无需依赖Nginx的服务，跳过安装 Nginx 与 acme.sh"
+        return 0
     else
         # Detect the nginx bundled with BT Panel/aaPanel (not in the system PATH, but installed)
         local panelNginxBin=""
@@ -145,7 +147,7 @@ installTools() {
         fi
         if ! command -v nginx &>/dev/null && [[ -z "${panelNginxBin}" ]]; then
             echoContent yellow " ---> 未检测到 Nginx，开始安装"
-            installNginxTools
+            installNginxTools || return 1
         else
             local existingConfCount
             existingConfCount=$(find "${nginxConfigPath}" /etc/nginx/sites-enabled -name "*.conf" 2>/dev/null | wc -l)
@@ -160,41 +162,41 @@ installTools() {
         fi
     fi
 
-    # Check whether native ACME is used
-    showNativeACMENotice
+    # The panel site's own certificate is used; acme.sh is not needed (and
+    # an unreachable get.acme.sh must not stop a panel install).
+    if [[ -n "${btDomain}" ]]; then
+        echoContent green " ---> 使用面板站点证书，跳过安装 acme.sh"
+        return 0
+    fi
 
-    if [[ "${nativeACMEEnabled}" != "true" ]]; then
-        # Native ACME is not used; install acme.sh
-        if [[ ! -d "$HOME/.acme.sh" ]] || [[ -d "$HOME/.acme.sh" && -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
-            echoContent green " ---> 安装acme.sh"
-            local acmeInstaller="/tmp/acme-install.$$.sh"
-            if ! downloadFile "https://get.acme.sh" "${acmeInstaller}"; then
-                echoContent red " ---> acme.sh 安装脚本下载失败"
-                return 1
-            fi
-            if ! sh "${acmeInstaller}" >/opt/xray-agent/tls/acme.log 2>&1; then
-                rm -f "${acmeInstaller}"
-                echoContent red " ---> acme.sh 安装脚本执行失败"
-                tail -n 100 /opt/xray-agent/tls/acme.log
-                return 1
-            fi
+    # Issues new certificates; existing acme.sh/certbot certificates are offered in the TLS step
+    if [[ ! -d "$HOME/.acme.sh" ]] || [[ -d "$HOME/.acme.sh" && -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
+        echoContent green " ---> 安装acme.sh"
+        local acmeInstaller="/tmp/acme-install.$$.sh"
+        if ! downloadFile "https://get.acme.sh" "${acmeInstaller}"; then
+            echoContent red " ---> acme.sh 安装脚本下载失败"
+            return 1
+        fi
+        if ! sh "${acmeInstaller}" >/opt/xray-agent/tls/acme.log 2>&1; then
             rm -f "${acmeInstaller}"
+            echoContent red " ---> acme.sh 安装脚本执行失败"
+            tail -n 100 /opt/xray-agent/tls/acme.log
+            return 1
+        fi
+        rm -f "${acmeInstaller}"
 
-            if [[ ! -d "$HOME/.acme.sh" ]] || [[ -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
-                echoContent red "  acme安装失败--->"
-                tail -n 100 /opt/xray-agent/tls/acme.log
-                echoContent yellow "错误排查:"
-                echoContent red "  1.获取Github文件失败，请等待Github恢复后尝试，恢复进度可查看 [https://www.githubstatus.com/]"
-                echoContent red "  2.acme.sh脚本出现bug，可查看[https://github.com/acmesh-official/acme.sh] issues"
-                echoContent red "  3.如纯IPv6机器，请设置NAT64,可执行下方命令，如果添加下方命令还是不可用，请尝试更换其他NAT64"
-                echoContent skyBlue "  sed -i \"1i\\\nameserver 2a00:1098:2b::1\\\nnameserver 2a00:1098:2c::1\\\nnameserver 2a01:4f8:c2c:123f::1\\\nnameserver 2a01:4f9:c010:3f02::1\" /etc/resolv.conf"
-                exit 0
-            fi
-        else
-            echoContent green " ---> acme.sh 已安装"
+        if [[ ! -d "$HOME/.acme.sh" ]] || [[ -z $(find "$HOME/.acme.sh/acme.sh") ]]; then
+            echoContent red "  acme安装失败--->"
+            tail -n 100 /opt/xray-agent/tls/acme.log
+            echoContent yellow "错误排查:"
+            echoContent red "  1.获取Github文件失败，请等待Github恢复后尝试，恢复进度可查看 [https://www.githubstatus.com/]"
+            echoContent red "  2.acme.sh脚本出现bug，可查看[https://github.com/acmesh-official/acme.sh] issues"
+            echoContent red "  3.如纯IPv6机器，请设置NAT64,可执行下方命令，如果添加下方命令还是不可用，请尝试更换其他NAT64"
+            echoContent skyBlue "  sed -i \"1i\\\nameserver 2a00:1098:2b::1\\\nnameserver 2a00:1098:2c::1\\\nnameserver 2a01:4f8:c2c:123f::1\\\nnameserver 2a01:4f9:c010:3f02::1\" /etc/resolv.conf"
+            exit 0
         fi
     else
-        echoContent green " ---> 使用 Native ACME 证书，跳过安装 acme.sh"
+        echoContent green " ---> acme.sh 已安装"
     fi
 }
 
@@ -326,7 +328,12 @@ runInstall() {
         checkBTPanel
         check1Panel
     fi
-    installTools $((++step))
+    # Nothing is stopped yet; a missing nginx or acme.sh would only fail
+    # after Xray was installed.
+    if ! installTools $((++step)); then
+        echoContent red " ---> 依赖安装失败，已中止安装"
+        return 1
+    fi
 
     if [[ "${needsTLS}" != "true" ]]; then
         echoContent skyBlue "\n进度  $((++step))/${totalProgress} : 仅安装 Reality，跳过域名与证书"
@@ -338,8 +345,10 @@ runInstall() {
         installTLS $((++step))
     fi
 
-    # REALITY-only installs do not use nginx; keep the host's sites up.
-    if [[ "${needsTLS}" == "true" ]]; then
+    # REALITY-only installs do not use nginx; keep the host's sites up. A
+    # panel's nginx is not stopped either (no ACME issuance or port probe
+    # needs it): it is reloaded once the config is written.
+    if [[ "${needsTLS}" == "true" && -z "${btDomain}" ]]; then
         handleNginx stop
     fi
     if hasProtocol "${selectCustomInstallType}" 1 || hasProtocol "${selectCustomInstallType}" 12 \
@@ -364,12 +373,17 @@ runInstall() {
         updateRedirectNginxConf || abortInstall "无法生成Nginx配置" || return 1
         # Panel sites serve 443 themselves; XHTTP goes through a location there.
         if hasProtocol "${selectCustomInstallType}" 14; then
-            if [[ -n "${btDomain}" ]]; then
+            syncPanelXhttpLocation install
+            # Clients use the panel site's 443 only when our location is in
+            # it; otherwise the Vision port's fallback serves the same path.
+            if [[ "${panelXhttpInstalled}" == "true" ]]; then
                 echo 443 >"${xhttpStateFile}"
             else
+                if [[ -n "${btDomain}" ]]; then
+                    echoContent yellow " ---> 未能接入面板站点，XHTTP 暂经 Xray 端口 ${port} 提供；接入面板站点后重新安装即可改用 443"
+                fi
                 echo "${port}" >"${xhttpStateFile}"
             fi
-            syncPanelXhttpLocation install
         else
             syncPanelXhttpLocation remove
             rm -f "${xhttpStateFile}"
@@ -378,7 +392,11 @@ runInstall() {
     fi
 
     restartXray || restartStatus=$?
-    handleNginx start
+    if [[ "${needsTLS}" == "true" && -n "${btDomain}" ]]; then
+        applyPanelNginxConfig
+    else
+        handleNginx start
+    fi
     ((restartStatus == 0)) || return 1
     if hasProtocol "${selectCustomInstallType}" 14; then
         checkPanelXhttpReachable

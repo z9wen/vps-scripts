@@ -116,6 +116,49 @@ jq -n '{outbounds:[
 nodes=$(getRelayNodesFromSingBoxSubscription "${temporaryDirectory}/sub.json")
 jq -e 'map(.tag) == ["plain"]' <<<"${nodes}" >/dev/null || fail "plugin nodes must be skipped"
 
+# Relay outbound files are renamed to *_tail_outbound.json, which Xray
+# appends instead of prepending, so a relay never becomes the default
+# outbound (e.g. in the IPv6 global mode, where z_direct_outbound.json is gone).
+reset_fixture
+ensureRelayStateV2 || fail "migration failed"
+[[ "${relayOutboundFilesMigrated}" == "true" ]] || fail "migration should report renamed files"
+[[ -f "${configPath}relay_us_tail_outbound.json" && ! -f "${configPath}relay_us_outbound.json" ]] || fail "relay_us file not renamed"
+[[ -f "${configPath}relay_jp_tail_outbound.json" && ! -f "${configPath}relay_jp_outbound.json" ]] || fail "relay_jp file not renamed"
+jq -e '[.profiles[].outboundFile] == ["relay_us_tail_outbound.json","relay_jp_tail_outbound.json"]' "${relayStateFile}" >/dev/null \
+    || fail "state must point at the renamed files"
+ensureRelayStateV2 || fail "second migration failed"
+[[ -z "${relayOutboundFilesMigrated}" ]] || fail "migration must be a no-op the second time"
+relayProfileFileIsSafe relay_123_456_tail_outbound.json || fail "new file names must pass the safety check"
+removeOrphanedRelayFiles
+[[ -f "${configPath}relay_us_tail_outbound.json" ]] || fail "orphan cleanup must keep the renamed files"
+
+# Subscription refresh: a renamed node on the same server is followed; the
+# first node of the subscription (here an information entry) is never used.
+reset_fixture
+jq '.profiles[0] += {source:"subscription",outboundFile:"relay_us_tail_outbound.json",
+    subscription:{format:"sing-box-json",url:"https://example.com/sub.json",selectedTag:"US 01 | 剩余 80G",nodeType:"shadowsocks"},
+    tcp:{mode:"relay",protocol:"shadowsocks",label:"ss",address:"203.0.113.7",port:"8388"}}' "${relayStateFile}" >"${relayStateFile}.new"
+mv "${relayStateFile}.new" "${relayStateFile}"
+mv "${configPath}relay_us_outbound.json" "${configPath}relay_us_tail_outbound.json"
+subscriptionNodes='{"outbounds":[
+    {type:"shadowsocks",tag:"剩余流量：70 GB",server:"127.0.0.1",server_port:1,method:"aes-256-gcm",password:"x"},
+    {type:"shadowsocks",tag:"US 01 | 剩余 70G",server:"203.0.113.7",server_port:8388,method:"aes-256-gcm",password:"new"}]}'
+fetchRelaySubscription() { jq -n "${subscriptionNodes}" >"$2"; }
+updateRelaySubscriptionProfile us >/dev/null || fail "a renamed node on the same server should be followed"
+jq -e 'first(.profiles[] | select(.id == "us")).subscription.selectedTag == "US 01 | 剩余 70G"' "${relayStateFile}" >/dev/null \
+    || fail "the renamed tag should be recorded"
+jq -e '.outbounds[0].settings.address == "203.0.113.7" and .outbounds[0].settings.password == "new"' \
+    "${configPath}relay_us_tail_outbound.json" >/dev/null || fail "the outbound should follow the same server"
+# The server is gone: keep the working config instead of switching nodes.
+subscriptionNodes='{"outbounds":[
+    {type:"shadowsocks",tag:"剩余流量：60 GB",server:"127.0.0.1",server_port:1,method:"aes-256-gcm",password:"x"},
+    {type:"shadowsocks",tag:"JP 01",server:"198.51.100.9",server_port:8388,method:"aes-256-gcm",password:"y"}]}'
+before=$(snapshot)
+if updateRelaySubscriptionProfile us >/dev/null; then
+    fail "a subscription without the node's server must not switch nodes"
+fi
+[[ "$(snapshot)" == "${before}" ]] || fail "the old config must be kept when the node is gone"
+
 # Nested lock use must not deadlock and must keep the inner status.
 innerFails() { return 3; }
 status=0

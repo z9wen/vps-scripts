@@ -67,6 +67,10 @@ showAccounts() {
         local xhttpPort
         xhttpPort=$(cat "${xhttpStateFile}" 2>/dev/null)
         xhttpPort=${xhttpPort:-${currentDefaultPort}}
+        currentXhttpAlpn=$(xhttpEntryAlpn "${xhttpPort}")
+        if [[ "${currentXhttpAlpn}" == "http/1.1" ]]; then
+            echoContent yellow " ---> 入口 ${currentHost}:${xhttpPort} 未开启 HTTP/2（面板站点），直连链接使用 HTTP/1.1；建议在面板中开启 HTTP/2\n"
+        fi
         inboundUsers "${configPath}14_VLESS_XHTTP_TLS_inbounds.json" "${accountId}" | while read -r user; do
             local email count=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -95,6 +99,7 @@ showAccounts() {
     if echo ${currentInstallProtocolType} | grep -q ",3," \
         && [[ -n "$(inboundUsers "${configPath}07_VLESS_vision_reality_inbounds.json" "${accountId}")" ]]; then
         echoContent skyBlue "============================= VLESS reality_vision [推荐]  ==============================\n"
+        realityClientNotice
         inboundUsers "${configPath}07_VLESS_vision_reality_inbounds.json" "${accountId}" | while read -r user; do
             local email=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -109,6 +114,7 @@ showAccounts() {
     if hasProtocol "${currentInstallProtocolType}" 12 \
         && [[ -n "$(inboundUsers "${configPath}12_VLESS_XHTTP_inbounds.json" "${accountId}")" ]]; then
         echoContent skyBlue "\n============================ VLESS XHTTP Reality [无需域名] ============================\n"
+        realityClientNotice
         inboundUsers "${configPath}12_VLESS_XHTTP_inbounds.json" "${accountId}" | while read -r user; do
             local email=
             email=$(echo "${user}" | jq -r .email//.name)
@@ -122,6 +128,30 @@ showAccounts() {
 # Percent-encode a string for URLs (share links, QR codes).
 urlEncode() {
     jq -rn --arg value "$1" '$value | @uri'
+}
+
+# ALPN for XHTTP links to the entry at local port $1 (the domain's SNI):
+# "http/1.1" when it only speaks HTTP/1.1 (a panel site without HTTP/2),
+# otherwise "h2". Xray picks its XHTTP transport from the alpn setting, so
+# an h2-only link fails against an HTTP/1.1-only site.
+xhttpEntryAlpn() {
+    local version
+    version=$(curl -sk --max-time 3 --resolve "${currentHost}:$1:127.0.0.1" -o /dev/null \
+        -w '%{http_version}' "https://${currentHost}:$1/" 2>/dev/null)
+    if [[ "${version}" == "1.1" ]]; then
+        echo "http/1.1"
+    else
+        echo "h2"
+    fi
+}
+
+# Host part of a share link: an IPv6 literal (IPv6-only hosts) needs brackets.
+urlHostPart() {
+    if [[ "$1" == *:* ]]; then
+        echo "[$1]"
+    else
+        echo "$1"
+    fi
 }
 initSubscribeLocalConfig() {
     rm -rf /opt/xray-agent/subscribe_local/sing-box/*
@@ -173,7 +203,7 @@ EOF
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/opt/xray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 VLESS(VLESS+TCP+TLS_Vision)"
-        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=vless%3A%2F%2F${id}%40${currentHost}%3A${port}%3Fencryption%3Dnone%26fp%3Dchrome%26security%3Dtls%26type%3Dtcp%26${currentHost}%3D${currentHost}%26headerType%3Dnone%26sni%3D${currentHost}%26flow%3Dxtls-rprx-vision%23${email}\n"
+        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "vless://${id}@${currentHost}:${port}?encryption=none&security=tls&type=tcp&host=${currentHost}&fp=chrome&headerType=none&sni=${currentHost}&flow=xtls-rprx-vision#${email}")\n"
 
     elif [[ "${type}" == "vlessws" ]]; then
 
@@ -211,12 +241,17 @@ EOF
 
     elif [[ "${type}" == "vlessXhttp" ]]; then
         # Xray-first: sing-box has no XHTTP, so no sing-box entry is written.
-        local link
-        link="vless://${id}@${add}:${port}?encryption=none&security=tls&type=xhttp&sni=${currentHost}&host=${currentHost}&fp=chrome&alpn=h2&path=$(urlEncode "${path}")&mode=auto#${email}"
+        local link alpn=h2
+        # Through a CDN the client talks HTTP/2 to the CDN; only a direct
+        # link to an HTTP/1.1-only panel site must ask for HTTP/1.1.
+        if [[ "${currentXhttpAlpn:-h2}" == "http/1.1" && "${add}" == "${currentHost}" ]]; then
+            alpn=http/1.1
+        fi
+        link="vless://${id}@${add}:${port}?encryption=none&security=tls&type=xhttp&sni=${currentHost}&host=${currentHost}&fp=chrome&alpn=$(urlEncode "${alpn}")&path=$(urlEncode "${path}")&mode=auto#${email}"
         echoContent yellow " ---> 通用格式(VLESS+XHTTP+TLS)"
         echoContent green "    ${link}\n"
         echoContent yellow " ---> 格式化明文(VLESS+XHTTP+TLS)"
-        echoContent green "    协议类型:VLESS，地址:${add}，SNI/Host:${currentHost}，端口:${port}，用户ID:${id}，安全:tls，传输方式:xhttp，路径:${path}，mode:auto，账户名:${email}\n"
+        echoContent green "    协议类型:VLESS，地址:${add}，SNI/Host:${currentHost}，端口:${port}，用户ID:${id}，安全:tls，传输方式:xhttp，alpn:${alpn}，路径:${path}，mode:auto，账户名:${email}\n"
         echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
@@ -229,7 +264,7 @@ EOF
     network: xhttp
     packet-encoding: xudp
     client-fingerprint: chrome
-    alpn: [h2]
+    alpn: [${alpn}]
     servername: ${currentHost}
     xhttp-opts:
       path: ${path}
@@ -240,18 +275,22 @@ EOF
         echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
 
     elif [[ "${type}" == "vlessXhttpReality" ]]; then
-        local link pqvParam=
+        # Clash Meta REALITY entries set support-x25519mlkem768: Xray v26.9.8+
+        # servers reject REALITY Client Hellos without X25519MLKEM768, and
+        # mihomo only sends it with this option (older servers accept both).
+        local link realityAddress pqvParam=
+        realityAddress=$(getPublicIP)
         [[ -n "${currentRealityMldsa65Verify}" && "${currentRealityMldsa65Verify}" != "null" ]] && pqvParam="&pqv=${currentRealityMldsa65Verify}"
-        link="vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&type=xhttp&sni=${xrayVLESSRealityServerName}&fp=chrome&pbk=${currentRealityPublicKey}&sid=6ba85179e30d4fc2${pqvParam}&path=$(urlEncode "${path}")&mode=auto#${email}"
+        link="vless://${id}@$(urlHostPart "${realityAddress}"):${port}?encryption=none&security=reality&type=xhttp&sni=${xrayVLESSRealityServerName}&fp=chrome&pbk=${currentRealityPublicKey}&sid=6ba85179e30d4fc2${pqvParam}&path=$(urlEncode "${path}")&mode=auto#${email}"
         echoContent yellow " ---> 通用格式(VLESS+XHTTP+Reality)"
         echoContent green "    ${link}\n"
         echoContent yellow " ---> 格式化明文(VLESS+XHTTP+Reality)"
-        echoContent green "    协议类型:VLESS reality，地址:$(getPublicIP)，端口:${port}，publicKey:${currentRealityPublicKey}，shortId:6ba85179e30d4fc2，serverName:${xrayVLESSRealityServerName}，传输方式:xhttp，路径:${path}，用户ID:${id}，账户名:${email}\n"
+        echoContent green "    协议类型:VLESS reality，地址:${realityAddress}，端口:${port}，publicKey:${currentRealityPublicKey}，shortId:6ba85179e30d4fc2，serverName:${xrayVLESSRealityServerName}，传输方式:xhttp，路径:${path}，用户ID:${id}，账户名:${email}\n"
         echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
     type: vless
-    server: $(getPublicIP)
+    server: ${realityAddress}
     port: ${port}
     uuid: ${id}
     udp: true
@@ -265,6 +304,7 @@ EOF
     reality-opts:
       public-key: ${currentRealityPublicKey}
       short-id: 6ba85179e30d4fc2
+      support-x25519mlkem768: true
 EOF
         echoContent yellow " ---> 二维码 VLESS(VLESS+XHTTP+Reality)"
         echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
@@ -315,19 +355,20 @@ EOF
         local realityServerName=${xrayVLESSRealityServerName}
         local publicKey=${currentRealityPublicKey}
         local realityMldsa65Verify=${currentRealityMldsa65Verify}
+        local realityAddress link
+        realityAddress=$(getPublicIP)
+        link="vless://${id}@$(urlHostPart "${realityAddress}"):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}"
 
         echoContent yellow " ---> 通用格式(VLESS+reality+uTLS+Vision)"
-        echoContent green "    vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}\n"
+        echoContent green "    ${link}\n"
 
         echoContent yellow " ---> 格式化明文(VLESS+reality+uTLS+Vision)"
-        echoContent green "协议类型:VLESS reality，地址:$(getPublicIP)，publicKey:${publicKey}，shortId: 6ba85179e30d4fc2，pqv=${realityMldsa65Verify}，serverNames：${realityServerName}，端口:${port}，用户ID:${id}，传输方式:tcp，账户名:${email}\n"
-        cat <<EOF >>"/opt/xray-agent/subscribe_local/default/${user}"
-vless://${id}@$(getPublicIP):${port}?encryption=none&security=reality&pqv=${realityMldsa65Verify}&type=tcp&sni=${realityServerName}&fp=chrome&pbk=${publicKey}&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#${email}
-EOF
+        echoContent green "协议类型:VLESS reality，地址:${realityAddress}，publicKey:${publicKey}，shortId: 6ba85179e30d4fc2，pqv=${realityMldsa65Verify}，serverNames：${realityServerName}，端口:${port}，用户ID:${id}，传输方式:tcp，账户名:${email}\n"
+        echo "${link}" >>"/opt/xray-agent/subscribe_local/default/${user}"
         cat <<EOF >>"/opt/xray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
     type: vless
-    server: $(getPublicIP)
+    server: ${realityAddress}
     port: ${port}
     uuid: ${id}
     network: tcp
@@ -338,10 +379,11 @@ EOF
     reality-opts:
       public-key: ${publicKey}
       short-id: 6ba85179e30d4fc2
+      support-x25519mlkem768: true
     client-fingerprint: chrome
 EOF
 
-        singBoxSubscribeLocalConfig=$(jq --arg tag "${email}" --arg server "$(getPublicIP)" --argjson port "${port}" --arg uuid "${id}" \
+        singBoxSubscribeLocalConfig=$(jq --arg tag "${email}" --arg server "${realityAddress}" --argjson port "${port}" --arg uuid "${id}" \
             --arg serverName "${realityServerName}" --arg publicKey "${publicKey}" \
             '. += [{tag:$tag,type:"vless",server:$server,server_port:$port,uuid:$uuid,flow:"xtls-rprx-vision",
                     tls:{enabled:true,server_name:$serverName,utls:{enabled:true,fingerprint:"chrome"},
@@ -351,7 +393,7 @@ EOF
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/opt/xray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 VLESS(VLESS+reality+uTLS+Vision)"
-        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=vless%3A%2F%2F${id}%40$(getPublicIP)%3A${port}%3Fencryption%3Dnone%26security%3Dreality%26type%3Dtcp%26sni%3D${realityServerName}%26fp%3Dchrome%26pbk%3D${publicKey}%26sid%3D6ba85179e30d4fc2%26flow%3Dxtls-rprx-vision%23${email}\n"
+        echoContent green "    https://api-qr-server.zwen.cc/v1/create-qr-code/?size=400x400&data=$(urlEncode "${link}")\n"
 
     fi
 

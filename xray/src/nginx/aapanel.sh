@@ -109,10 +109,8 @@ checkBTPanel() {
                     nginxStaticPath="/www/wwwroot/${btDomain}/html/"
 
                     mkdir -p "/www/wwwroot/${btDomain}/html/"
-
-                    if [[ -f "/www/wwwroot/${btDomain}/.user.ini" ]]; then
-                        chattr -i "/www/wwwroot/${btDomain}/.user.ini"
-                    fi
+                    # The site's .user.ini keeps the panel's immutable flag
+                    # (its open_basedir protection); nothing here writes it.
                     nginxConfigPath="/www/server/panel/vhost/nginx/"
                 fi
             else
@@ -204,6 +202,8 @@ stripXhttpPanelBlock() {
 # Usage: syncPanelXhttpLocation install|remove
 syncPanelXhttpLocation() {
     local action=$1 target file mode backupDir index=0 output
+    # Set when the location is in the panel site and nginx accepted it.
+    panelXhttpInstalled=
     [[ -n "${btDomain}" ]] || return 0
     if ! target=$(findPanelXhttpTarget); then
         if [[ "${action}" == "install" ]]; then
@@ -257,6 +257,7 @@ syncPanelXhttpLocation() {
     rm -rf "${backupDir}"
     panelNginxReload >/dev/null 2>&1
     if [[ "${action}" == "install" ]]; then
+        panelXhttpInstalled=true
         echoContent green " ---> XHTTP 已接入面板站点 https://${btDomain}$(xhttpPublicPath)/ (${file})"
     fi
 }
@@ -285,13 +286,18 @@ removeAllPanelXhttpLocations() {
 # path, e.g. a return/rewrite written directly into the site config.
 checkPanelXhttpReachable() {
     local result code
-    [[ -n "${btDomain}" ]] || return 0
+    [[ -n "${btDomain}" && "${panelXhttpInstalled}" == "true" ]] || return 0
     command -v curl >/dev/null 2>&1 || return 0
     result=$(curl -sk --max-time 5 --resolve "${btDomain}:443:127.0.0.1" -o /dev/null \
-        -w '%{http_code} %{redirect_url}' "https://${btDomain}$(xhttpPublicPath)/") || return 0
+        -w '%{http_code} %{http_version} %{redirect_url}' "https://${btDomain}$(xhttpPublicPath)/") || return 0
     code=${result%% *}
+    result=${result#* }
+    if [[ "${result%% *}" == "1.1" ]]; then
+        echoContent yellow " ---> 站点 ${btDomain} 未开启 HTTP/2，XHTTP 链接将使用 HTTP/1.1；建议在面板中开启 HTTP/2 后重新生成账号链接"
+    fi
+    result=${result#* }
     case ${code} in
-        3??) echoContent red " ---> XHTTP 路径被站点 ${btDomain} 重定向 (${code} -> ${result#* })，客户端将无法连接" ;;
+        3??) echoContent red " ---> XHTTP 路径被站点 ${btDomain} 重定向 (${code} -> ${result})，客户端将无法连接" ;;
         404) echoContent red " ---> XHTTP 路径未到达 Xray（站点 ${btDomain} 返回 404），客户端将无法连接" ;;
         *) return 0 ;;
     esac

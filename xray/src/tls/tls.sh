@@ -1,3 +1,13 @@
+# Where Xray reads its certificate and key.
+xrayTLSDirectory=/opt/xray-agent/tls
+
+# True when certificate file $1 is valid for host name $2. The printed result
+# is used because "openssl x509 -checkhost" exits 0 on a mismatch with
+# OpenSSL 3.0 (Debian 12, Ubuntu 22.04 and 24.04).
+certificateCoversHost() {
+    openssl x509 -in "$1" -noout -checkhost "$2" 2>/dev/null | grep -q " does match certificate"
+}
+
 # Read TLS certificate details
 readAcmeTLS() {
     local readAcmeDomain=
@@ -33,51 +43,6 @@ readAcmeTLS() {
     done < <(find "$HOME/.acme.sh" -maxdepth 1 -type d -name "*.${dnsTLSDomain}_ecc" 2>/dev/null)
 }
 
-# Detect native ACME clients
-checkNativeACME() {
-    local nativeACMEType=""
-
-    # Detect certbot
-    if command -v certbot &>/dev/null; then
-        nativeACMEType="certbot"
-        local certbotVersion certCount
-        certbotVersion=$(certbot --version 2>&1 | head -1)
-        echoContent skyBlue "\n检测到 Native ACME 客户端: ${nativeACMEType}"
-        echoContent green "  版本: ${certbotVersion}"
-
-        # Check for existing certificates
-        if [[ -d "/etc/letsencrypt/live" ]]; then
-            certCount=$(find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d | wc -l)
-            if [[ ${certCount} -gt 0 ]]; then
-                echoContent yellow "  已有证书数量: ${certCount}"
-                echoContent skyBlue "\n可用证书域名:"
-                find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | nl
-            fi
-        fi
-        return 0
-    fi
-
-    # Detect other ACME clients
-    if command -v lego &>/dev/null; then
-        nativeACMEType="lego"
-        echoContent skyBlue "\n检测到 Native ACME 客户端: ${nativeACMEType}"
-        return 0
-    fi
-
-    return 1
-}
-
-# Use native ACME certificates (check during initialization)
-# Tell the user an existing ACME client was found. Certificate choice happens
-# later, in the TLS step.
-showNativeACMENotice() {
-    if checkNativeACME; then
-        echoContent skyBlue "\n=============================================================="
-        echoContent yellow "检测到系统已安装 Native ACME 客户端"
-        echoContent yellow "在安装过程中将提供使用现有证书的选项"
-        echoContent red "==============================================================\n"
-    fi
-}
 # Custom email
 customSSLEmail() {
     if echo "$1" | grep -q "validate email"; then
@@ -104,143 +69,201 @@ customSSLEmail() {
 
 }
 
-# Locate the acme.sh installed by default by acme_manage.sh; ACME_HOME and PATH are also supported.
-detectLocalAcmeHome() {
-    local candidate=
-    local -a candidates=("${ACME_HOME:-}" "$HOME/.acme.sh" "/root/.acme.sh")
-    for candidate in "${candidates[@]}"; do
-        if [[ -n "${candidate}" && -x "${candidate}/acme.sh" ]]; then
-            echo "${candidate}"
-            return 0
-        fi
-    done
+# Where certbot keeps the current certificate of each lineage.
+certbotLiveDirectory=/etc/letsencrypt/live
 
-    if command -v acme.sh >/dev/null 2>&1; then
-        candidate=$(dirname "$(readlink -f "$(command -v acme.sh)")")
-        if [[ -x "${candidate}/acme.sh" ]]; then
-            echo "${candidate}"
-            return 0
+# Every acme.sh home on this host, one per line: $ACME_HOME, the default
+# homes, the homes named by acme.sh cron jobs (installed with --home) and an
+# acme.sh on PATH. All are listed, because the installer itself creates
+# ~/.acme.sh next to a custom home.
+detectLocalAcmeHomes() {
+    local candidate resolved seen=
+    {
+        printf '%s\n' "${ACME_HOME:-}" "$HOME/.acme.sh" /root/.acme.sh
+        crontab -l 2>/dev/null | grep -- '--cron' \
+            | sed -n 's/.*--home[[:space:]]\{1,\}"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p'
+        if command -v acme.sh >/dev/null 2>&1; then
+            dirname "$(readlink -f "$(command -v acme.sh)")"
         fi
-    fi
+    } | while IFS= read -r candidate; do
+        [[ -n "${candidate}" && -x "${candidate}/acme.sh" ]] || continue
+        resolved=$(readlink -f "${candidate}" 2>/dev/null || echo "${candidate}")
+        [[ "${seen}" == *$'\n'"${resolved}"$'\n'* ]] && continue
+        seen+=$'\n'"${resolved}"$'\n'
+        echo "${resolved}"
+    done
+}
+
+# Certificates issued on this host, one per line as
+# "<name>\t<kind>\t<certificate>\t<key>\t<acme home>"; kind is ECC or RSA for
+# acme.sh and certbot for certbot (no acme home). acme.sh keeps ECC
+# certificates in <domain>_ecc and RSA ones in <domain>; a certificate for
+# several names (acme_manage.sh: example.com plus *.example.com) lives under
+# the first one.
+localCertificateEntries() {
+    local acmeHome conf certDir certDomain kind
+    while IFS= read -r acmeHome; do
+        while read -r conf; do
+            certDir=$(dirname "${conf}")
+            certDomain=$(basename "${conf}" .conf)
+            # Also skips <domain>.csr.conf
+            [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certDomain}.key" ]] || continue
+            kind=RSA
+            [[ "$(basename "${certDir}")" == *_ecc ]] && kind=ECC
+            printf '%s\t%s\t%s\t%s\t%s\n' "${certDomain}" "${kind}" "${certDir}/fullchain.cer" "${certDir}/${certDomain}.key" "${acmeHome}"
+        done < <(find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | sort)
+    done < <(detectLocalAcmeHomes)
+
+    for certDir in "${certbotLiveDirectory}"/*/; do
+        certDir=${certDir%/}
+        [[ -s "${certDir}/fullchain.pem" && -s "${certDir}/privkey.pem" ]] || continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "${certDir}")" certbot "${certDir}/fullchain.pem" "${certDir}/privkey.pem" ""
+    done
+}
+
+# Record entry fields $1-$5 (see localCertificateEntries) as the certificate to use.
+setManagedCertificate() {
+    acmeManagedSourceDomain=$1
+    acmeManagedCertFile=$3
+    acmeManagedKeyFile=$4
+    acmeManagedHome=$5
+    acmeManagedCertSelected=true
+}
+
+# Select an unexpired certificate that covers domain $1, as
+# selectLocalAcmeCertificate does. Used when the domain was typed in instead
+# of picked from the list.
+findLocalAcmeCertificateFor() {
+    local name kind certFile keyFile acmeHome
+    while IFS=$'\t' read -r name kind certFile keyFile acmeHome; do
+        openssl x509 -in "${certFile}" -noout -checkend 0 >/dev/null 2>&1 || continue
+        certificateCoversHost "${certFile}" "$1" || continue
+        setManagedCertificate "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}"
+        return 0
+    done < <(localCertificateEntries)
     return 1
 }
 
-# Select an RSA/ECC certificate from the acme.sh certificate config directory.
+# "<name> [<kind>]", plus the acme.sh home when it is not the default one.
+describeCertificateEntry() {
+    local description="$1 [$2]"
+    [[ -n "$5" && "$5" != "$(readlink -f "$HOME/.acme.sh" 2>/dev/null)" ]] && description+=" ${5}"
+    echo "${description}"
+}
+
+# Choose one of the certificates issued on this host (acme.sh or certbot).
 selectLocalAcmeCertificate() {
-    local acmeHome=
-    acmeHome=$(detectLocalAcmeHome) || return 1
+    local -a entries=()
+    local entry
+    while IFS= read -r entry; do
+        entries+=("${entry}")
+    done < <(localCertificateEntries)
+    ((${#entries[@]} > 0)) || return 1
 
-    local -a certDomains=()
-    local -a certDirs=()
-    local -a certEcc=()
-    local conf certDir certDomain eccLabel
-    while read -r conf; do
-        certDir=$(dirname "${conf}")
-        certDomain=$(basename "${conf}" .conf)
-        [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certDomain}.key" ]] || continue
-
-        if [[ "$(basename "${certDir}")" == *_ecc ]]; then
-            certEcc+=(true)
-        else
-            certEcc+=(false)
-        fi
-        certDomains+=("${certDomain}")
-        certDirs+=("${certDir}")
-    done < <(find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | sort)
-
-    if ((${#certDomains[@]} == 0)); then
-        return 1
-    fi
-
-    echoContent skyBlue "\n---------- acme.sh 已签发证书 ----------"
-    local i
-    for i in "${!certDomains[@]}"; do
-        eccLabel=RSA
-        [[ "${certEcc[$i]}" == "true" ]] && eccLabel=ECC
-        echoContent yellow "$((i + 1)). ${certDomains[$i]} [${eccLabel}]"
+    local i name kind certFile keyFile acmeHome
+    echoContent skyBlue "\n---------- 本机已签发证书 (acme.sh / certbot) ----------"
+    for i in "${!entries[@]}"; do
+        IFS=$'\t' read -r name kind certFile keyFile acmeHome <<<"${entries[$i]}"
+        echoContent yellow "$((i + 1)). $(describeCertificateEntry "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}")"
     done
-    echoContent skyBlue "----------------------------------------"
-    read -r -p "是否使用以上 acme.sh 证书？[y/n]:" useAcmeManagedCert
+    echoContent skyBlue "--------------------------------------------------------"
+    read -r -p "是否使用以上证书？[y/n]:" useAcmeManagedCert
     [[ "${useAcmeManagedCert}" == "y" ]] || return 1
 
     local selectedIndex=
     read -r -p "请选择证书编号:" selectedIndex
-    if [[ ! "${selectedIndex}" =~ ^[0-9]+$ ]] || ((selectedIndex < 1 || selectedIndex > ${#certDomains[@]})); then
+    if [[ ! "${selectedIndex}" =~ ^[0-9]+$ ]] || ((selectedIndex < 1 || selectedIndex > ${#entries[@]})); then
         echoContent red " ---> 证书编号无效"
         return 1
     fi
-    selectedIndex=$((selectedIndex - 1))
-
-    acmeManagedHome=${acmeHome}
-    acmeManagedSourceDomain=${certDomains[$selectedIndex]}
-    acmeManagedEcc=${certEcc[$selectedIndex]}
+    IFS=$'\t' read -r name kind certFile keyFile acmeHome <<<"${entries[$((selectedIndex - 1))]}"
 
     local serviceDomain=
-    read -r -p "请输入 Xray 使用的域名[默认:${acmeManagedSourceDomain}，通配符证书可填子域名]:" serviceDomain
-    serviceDomain=${serviceDomain:-${acmeManagedSourceDomain}}
+    read -r -p "请输入 Xray 使用的域名[默认:${name}，通配符证书可填子域名]:" serviceDomain
+    serviceDomain=${serviceDomain:-${name}}
 
-    while ! openssl x509 -in "${certDirs[$selectedIndex]}/fullchain.cer" -noout -checkhost "${serviceDomain}" >/dev/null 2>&1; do
+    while ! certificateCoversHost "${certFile}" "${serviceDomain}"; do
         echoContent red " ---> 所选证书不包含域名 ${serviceDomain}"
-        read -r -p "请重新输入证书覆盖的域名，输入 q 取消:" serviceDomain
+        # End of input cancels too, instead of asking forever
+        read -r -p "请重新输入证书覆盖的域名，输入 q 取消:" serviceDomain || return 1
         [[ "${serviceDomain}" == "q" ]] && return 1
     done
 
-    acmeManagedCertSelected=true
+    setManagedCertificate "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}"
     domain=${serviceDomain}
-    echoContent green " ---> 已选择 ${acmeManagedSourceDomain} 证书，Xray域名: ${domain}"
+    echoContent green " ---> 已选择 ${name} 证书，Xray域名: ${domain}"
     return 0
 }
 
-# Copy the certificate using the official acme.sh deploy interface, so later renewals update the Xray files automatically.
+# Value of key $1 in acme_managed.conf (written by deployLocalAcmeCertificate).
+acmeManagedSetting() {
+    awk -v key="$1" 'index($0, key "=") == 1 {print substr($0, length(key) + 2); exit}' \
+        "${xrayTLSDirectory}/acme_managed.conf" 2>/dev/null
+}
+
+# Copy certificate $1 and key $2 to the files Xray reads for domain $3,
+# unless they are already identical. Sets acmeManagedCertChanged=true when
+# the files were replaced.
+syncAcmeManagedCertificate() {
+    local sourceCert=$1 sourceKey=$2 serviceDomain=$3
+    local certFile="${xrayTLSDirectory}/${serviceDomain}.crt" keyFile="${xrayTLSDirectory}/${serviceDomain}.key"
+    acmeManagedCertChanged=
+
+    if [[ ! -s "${sourceCert}" || ! -s "${sourceKey}" ]]; then
+        echoContent red " ---> 找不到证书: ${sourceCert}"
+        return 1
+    fi
+    cmp -s "${sourceCert}" "${certFile}" && cmp -s "${sourceKey}" "${keyFile}" && return 0
+
+    # Refuse a renewal caught half-way or a certificate re-issued without this name.
+    if ! certificateCoversHost "${sourceCert}" "${serviceDomain}" \
+        || [[ "$(openssl x509 -in "${sourceCert}" -noout -pubkey 2>/dev/null)" != "$(openssl pkey -in "${sourceKey}" -pubout 2>/dev/null)" ]]; then
+        echoContent red " ---> 证书不包含 ${serviceDomain} 或与私钥不匹配，保留现有证书"
+        return 1
+    fi
+
+    mkdir -p "${xrayTLSDirectory}"
+    if ! (umask 077 && cp "${sourceKey}" "${keyFile}.tmp") || ! cp "${sourceCert}" "${certFile}.tmp" \
+        || ! mv -f "${keyFile}.tmp" "${keyFile}" || ! mv -f "${certFile}.tmp" "${certFile}"; then
+        rm -f "${keyFile}.tmp" "${certFile}.tmp"
+        echoContent red " ---> 复制证书失败"
+        return 1
+    fi
+    acmeManagedCertChanged=true
+}
+
+# Use the selected certificate: copy it for Xray and record it in
+# acme_managed.conf, from which the daily RenewTLS job copies renewed
+# certificates. The issuing client's own settings are not touched: acme.sh's
+# "--install-cert" keeps a single deploy target per certificate, so it would
+# take over (and an uninstall would break) the target and reload command of
+# another site using the same certificate.
 deployLocalAcmeCertificate() {
-    local certFile="/opt/xray-agent/tls/${domain}.crt"
-    local keyFile="/opt/xray-agent/tls/${domain}.key"
-    local -a installArgs=(
-        "${acmeManagedHome}/acme.sh" --install-cert
-        -d "${acmeManagedSourceDomain}"
-        --fullchain-file "${certFile}"
-        --key-file "${keyFile}"
-        --reloadcmd "if systemctl is-active --quiet xray.service; then systemctl restart xray.service >/dev/null 2>&1 || systemctl start xray.service >/dev/null 2>&1; fi"
-    )
-    [[ "${acmeManagedEcc}" == "true" ]] && installArgs+=(--ecc)
-
-    mkdir -p /opt/xray-agent/tls
-    if ! "${installArgs[@]}"; then
-        echoContent red " ---> 从 acme.sh 部署证书失败"
+    if ! syncAcmeManagedCertificate "${acmeManagedCertFile}" "${acmeManagedKeyFile}" "${domain}"; then
+        echoContent red " ---> 部署证书失败"
         return 1
     fi
-    chmod 600 "${keyFile}"
-
-    if [[ ! -s "${certFile}" || ! -s "${keyFile}" ]] || ! openssl x509 -in "${certFile}" -noout -checkhost "${domain}" >/dev/null 2>&1; then
-        echoContent red " ---> 部署后的证书无效或不包含 ${domain}"
-        return 1
-    fi
-
-    cat <<EOF >/opt/xray-agent/tls/acme_managed.conf
+    cat <<EOF >"${xrayTLSDirectory}/acme_managed.conf"
 ACME_HOME=${acmeManagedHome}
 SOURCE_DOMAIN=${acmeManagedSourceDomain}
 SERVICE_DOMAIN=${domain}
-ECC=${acmeManagedEcc}
+CERT_FILE=${acmeManagedCertFile}
+KEY_FILE=${acmeManagedKeyFile}
 EOF
-    echoContent green " ---> 已从 acme.sh 部署证书到 ${certFile}"
-    echoContent green " ---> acme.sh 续期后会自动更新证书并重载 Xray"
+    local client=acme.sh
+    [[ -z "${acmeManagedHome}" ]] && client=certbot
+    echoContent green " ---> 已复制证书到 ${xrayTLSDirectory}/${domain}.crt"
+    echoContent green " ---> ${client} 续期后，每日定时任务会同步新证书并重启 Xray"
 }
 
-# Kept for backward compatibility: list the acme.sh certificates available on this host.
+# List the certificates issued on this host.
 listLocalAcmeCertificates() {
-    local acmeHome=
-    acmeHome=$(detectLocalAcmeHome) || return 1
-    echoContent skyBlue "\n---------- 本地 acme.sh 证书 ----------"
-    find "${acmeHome}" -mindepth 2 -maxdepth 2 -type f -name '*.conf' 2>/dev/null | while read -r conf; do
-        local certDir certName certType
-        certDir=$(dirname "${conf}")
-        certName=$(basename "${conf}" .conf)
-        [[ -f "${certDir}/fullchain.cer" && -f "${certDir}/${certName}.key" ]] || continue
-        certType=RSA
-        [[ "$(basename "${certDir}")" == *_ecc ]] && certType=ECC
-        echoContent yellow " - ${certName} [${certType}]"
-    done
-    echoContent skyBlue "--------------------------------------"
+    local name kind certFile keyFile acmeHome
+    echoContent skyBlue "\n---------- 本机已签发证书 ----------"
+    while IFS=$'\t' read -r name kind certFile keyFile acmeHome; do
+        echoContent yellow " - $(describeCertificateEntry "${name}" "${kind}" "${certFile}" "${keyFile}" "${acmeHome}")"
+    done < <(localCertificateEntries)
+    echoContent skyBlue "------------------------------------"
 }
 
 # Choose the SSL installation type
@@ -340,27 +363,11 @@ acmeInstallSSL() {
 installTLS() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 申请TLS证书\n"
 
-    # Check whether a Native ACME certificate is used
-    if [[ "${nativeACMEEnabled}" == "true" ]]; then
-        echoContent green " ---> 使用 Native ACME 证书"
-        echoContent green " ---> 证书路径: ${nativeCertPath}"
-        echoContent green " ---> 密钥路径: ${nativeKeyPath}"
-
-        # Verify that the certificate files exist
-        if [[ -f "/opt/xray-agent/tls/${domain}.crt" && -f "/opt/xray-agent/tls/${domain}.key" ]]; then
-            echoContent green " ---> Native ACME 证书已就绪"
-            return 0
-        else
-            echoContent red " ---> Native ACME 证书软链接创建失败"
-            exit 0
-        fi
-    fi
-
     readAcmeTLS
     local tlsDomain=${domain}
 
     if [[ "${acmeManagedCertSelected}" == "true" ]]; then
-        echoContent green " ---> 使用 acme_manage.sh / acme.sh 已签发证书"
+        echoContent green " ---> 使用本机已签发的证书: ${acmeManagedSourceDomain}"
         if ! deployLocalAcmeCertificate; then
             exit 1
         fi
@@ -397,6 +404,14 @@ installTLS() {
         fi
 
     elif [[ -d "$HOME/.acme.sh" ]] && [[ ! -f "$HOME/.acme.sh/${tlsDomain}_ecc/${tlsDomain}.cer" || ! -f "$HOME/.acme.sh/${tlsDomain}_ecc/${tlsDomain}.key" ]]; then
+        # The domain was typed in rather than picked from the list: an
+        # existing certificate covering it (e.g. example.com plus
+        # *.example.com) is used instead of issuing a new one.
+        if findLocalAcmeCertificateFor "${tlsDomain}"; then
+            echoContent green " ---> 检测到覆盖 ${tlsDomain} 的已签发证书: ${acmeManagedSourceDomain}"
+            deployLocalAcmeCertificate || exit 1
+            return 0
+        fi
         local -a localAcmeDirs=()
         mapfile -t localAcmeDirs < <(find "$HOME/.acme.sh" -maxdepth 1 -type d -name "*_ecc" 2>/dev/null)
         if ((${#localAcmeDirs[@]} > 0)); then
@@ -447,10 +462,8 @@ installTLS() {
 installCronTLS() {
     if [[ -z "${btDomain}" ]]; then
         echoContent skyBlue "\n进度 $1/${totalProgress} : 添加定时维护证书"
-        if [[ "${acmeManagedCertSelected}" == "true" || -f "/opt/xray-agent/tls/acme_managed.conf" ]]; then
-            echoContent green " ---> 证书由 acme.sh 管理，保留 acme.sh 原有续期任务"
-            echoContent green " ---> 续期部署完成后会自动重载 Xray"
-            return 0
+        if [[ "${acmeManagedCertSelected}" == "true" || -f "${xrayTLSDirectory}/acme_managed.conf" ]]; then
+            echoContent green " ---> 证书由 acme.sh / certbot 续期，定时任务每日同步新证书并重启 Xray"
         fi
         crontab -l >/opt/xray-agent/backup_crontab.cron 2>/dev/null || true
         local historyCrontab
@@ -469,17 +482,35 @@ renewalTLS() {
         echoContent skyBlue "\n进度  $1/1 : 更新证书"
     fi
 
-    if [[ -f "/opt/xray-agent/tls/acme_managed.conf" ]]; then
-        local managedAcmeHome=
-        managedAcmeHome=$(awk -F= '$1 == "ACME_HOME" {sub(/^ACME_HOME=/, ""); print; exit}' /opt/xray-agent/tls/acme_managed.conf)
-        if [[ -x "${managedAcmeHome}/acme.sh" ]]; then
+    if [[ -f "${xrayTLSDirectory}/acme_managed.conf" ]]; then
+        local managedAcmeHome managedCertFile managedKeyFile managedSourceDirectory
+        managedAcmeHome=$(acmeManagedSetting ACME_HOME)
+        managedCertFile=$(acmeManagedSetting CERT_FILE)
+        managedKeyFile=$(acmeManagedSetting KEY_FILE)
+        if [[ -z "${managedCertFile}" ]]; then
+            # Written before CERT_FILE existed: always acme.sh
+            managedSourceDirectory="${managedAcmeHome}/$(acmeManagedSetting SOURCE_DOMAIN)"
+            [[ "$(acmeManagedSetting ECC)" == "true" ]] && managedSourceDirectory+="_ecc"
+            managedCertFile="${managedSourceDirectory}/fullchain.cer"
+            managedKeyFile="${managedSourceDirectory}/$(acmeManagedSetting SOURCE_DOMAIN).key"
+        fi
+        if [[ -z "${managedAcmeHome}" ]]; then
+            echoContent green " ---> 证书由 certbot 自动续期，检查是否有新证书"
+        elif [[ -x "${managedAcmeHome}/acme.sh" ]]; then
             echoContent green " ---> 使用 acme.sh 原有配置检查并续期证书"
             "${managedAcmeHome}/acme.sh" --cron --home "${managedAcmeHome}"
-            echoContent green " ---> acme.sh 证书维护完成"
-            return 0
+        else
+            echoContent red " ---> 找不到已登记的 acme.sh: ${managedAcmeHome}/acme.sh"
+            return 1
         fi
-        echoContent red " ---> 找不到已登记的 acme.sh: ${managedAcmeHome}/acme.sh"
-        return 1
+        syncAcmeManagedCertificate "${managedCertFile}" "${managedKeyFile}" "$(acmeManagedSetting SERVICE_DOMAIN)" || return 1
+        # Only a running Xray is restarted; an install starts it after writing its config.
+        if [[ "${acmeManagedCertChanged}" == "true" ]] && systemctl is-active --quiet xray.service 2>/dev/null; then
+            echoContent green " ---> 证书已更新，重启 Xray"
+            restartXray || return 1
+        fi
+        echoContent green " ---> 证书维护完成"
+        return 0
     fi
 
     readAcmeTLS

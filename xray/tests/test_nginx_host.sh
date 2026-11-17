@@ -156,4 +156,37 @@ restoreStoppedNginx
 restoreStoppedNginx
 [[ ${nginxStarts} -eq 1 ]] || fail "restore is a no-op once nginx runs again"
 
+# --- a panel's nginx is reloaded, never stopped ------------------------------
+reloads=0
+panelNginxReload() { ((++reloads)); }
+hostRunning=true
+nginxStarts=0
+applyPanelNginxConfig || fail "a valid config should be applied"
+[[ ${reloads} -eq 1 && "${hostRunning}" == "true" && ${nginxStarts} -eq 0 ]] \
+    || fail "a running panel nginx must be reloaded, not restarted"
+eval "realHostNginx() $(declare -f hostNginx | tail -n +2)"
+hostNginx() {
+    [[ "$1" == "-t" ]] && echo "nginx: [emerg] unexpected end of file" && return 1
+    realHostNginx "$@"
+}
+applyPanelNginxConfig && fail "a config that fails the test must be reported"
+[[ ${reloads} -eq 1 && "${hostRunning}" == "true" ]] || fail "a failing config must not be reloaded"
+eval "hostNginx() $(declare -f realHostNginx | tail -n +2)"
+hostRunning=false
+selectCustomInstallType=
+applyPanelNginxConfig
+[[ "${hostRunning}" == "true" && ${reloads} -eq 1 ]] || fail "a stopped panel nginx is started instead"
+
+# --- ports the subscription site cannot use ---------------------------------
+configPath="$(mktemp -d /tmp/xray-subscribe-ports-test.XXXXXX)/"
+trap 'rm -rf "${configPath}"' EXIT
+jq -n '{inbounds:[{port:2096,protocol:"vless"}]}' >"${configPath}02_VLESS_TCP_inbounds.json"
+jq -n '{inbounds:[{listen:"127.0.0.1",port:31305,protocol:"vless"}]}' >"${configPath}14_VLESS_XHTTP_TLS_inbounds.json"
+lsof() { [[ "$*" == "-i tcp:7777" ]] && echo "other 42 root 3u IPv4 0t0 TCP *:7777 (LISTEN)"; return 0; }
+subscribePortTaken 2096 || fail "a public Xray inbound port is taken"
+subscribePortTaken 31305 && fail "a loopback-only inbound does not take the public port"
+subscribePortTaken 443 || fail "a port an nginx site listens on is taken"
+subscribePortTaken 7777 || fail "a port another process listens on is taken"
+subscribePortTaken 18888 && fail "a free port is usable"
+
 echo "host nginx tests passed"

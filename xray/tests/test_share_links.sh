@@ -29,6 +29,11 @@ jq -n '{inbounds:[{protocol:"hysteria",tag:"Hysteria2",port:443,streamSettings:{
     settings:{version:2,clients:[{auth:"uuid-a",email:"alice-Hysteria2"}]}}]}' \
     >"${configPath}05_hysteria2_inbounds.json"
 
+# --- host part of a share link ----------------------------------------------
+[[ "$(urlHostPart 203.0.113.7)" == "203.0.113.7" ]] || fail "IPv4 stays as is"
+[[ "$(urlHostPart example.com)" == "example.com" ]] || fail "a domain stays as is"
+[[ "$(urlHostPart 2001:db8::7)" == "[2001:db8::7]" ]] || fail "IPv6 needs brackets in a URL"
+
 # --- users of an inbound ----------------------------------------------------
 [[ $(inboundUsers "${configPath}02_VLESS_TCP_inbounds.json" | wc -l) -eq 2 ]] || fail "no filter lists every user"
 [[ "$(inboundUsers "${configPath}02_VLESS_TCP_inbounds.json" uuid-b | jq -r .id)" == uuid-b ]] || fail "filter by VLESS id"

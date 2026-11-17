@@ -203,7 +203,11 @@ customPortFunction() {
             echoContent yellow "请输入端口[不可与宝塔/aaPanel/1Panel 或其 Nginx 的端口相同，回车随机]"
             read -r -p "端口:" port
             if [[ -z "${port}" ]]; then
-                port=$((RANDOM % 20001 + 10000))
+                # Skip ports already taken (the panel itself, its databases, ...)
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    port=$((RANDOM % 20001 + 10000))
+                    lsof -i "tcp:${port}" 2>/dev/null | grep -q LISTEN || break
+                done
             fi
         else
             echo

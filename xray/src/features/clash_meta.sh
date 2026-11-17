@@ -3,17 +3,17 @@ clashMetaConfig() {
     local url=$1
     local id=$2
     cat <<EOF >"/opt/xray-agent/subscribe/clashMetaProfiles/${id}"
-log-level: debug
+log-level: info
 mode: rule
 ipv6: true
 mixed-port: 7890
-allow-lan: true
-bind-address: "*"
-lan-allowed-ips:
-  - 0.0.0.0/0
-  - ::/0
+# The proxy, controller and DNS listen on localhost only: a LAN-wide proxy
+# and an unauthenticated controller on 0.0.0.0 let anyone on the network
+# (or the internet, with a public IPv6 address) use or reconfigure the
+# client. Enable LAN sharing in the client when it is wanted.
+allow-lan: false
 find-process-mode: strict
-external-controller: 0.0.0.0:9090
+external-controller: 127.0.0.1:9090
 
 geox-url:
   geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
@@ -46,7 +46,7 @@ sniffer:
 dns:
   enable: true
   prefer-h3: false
-  listen: 0.0.0.0:1053
+  listen: 127.0.0.1:1053
   ipv6: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16

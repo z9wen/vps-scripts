@@ -234,16 +234,12 @@ initVar() {
     # Previous installation config status
     lastInstallationConfig=
 
-    # Native ACME related
-    nativeACMEEnabled=
-    nativeCertPath=
-    nativeKeyPath=
-
-    # Existing certificates managed by acme.sh/acme_manage.sh
+    # Existing certificate issued by acme.sh/acme_manage.sh or certbot
     acmeManagedCertSelected=
     acmeManagedHome=
     acmeManagedSourceDomain=
-    acmeManagedEcc=
+    acmeManagedCertFile=
+    acmeManagedKeyFile=
 
     # Auto-discovered wildcard acme.sh certificate path
     dnsTLSAcmeCertPath=

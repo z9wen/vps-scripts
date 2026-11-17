@@ -217,8 +217,20 @@ warnRealityClientChange() {
     local from=$1 to=$2
     [[ -f "${configPath}07_VLESS_vision_reality_inbounds.json" ]] || return 0
     if xrayVersionAtLeast "${to}" "v26.9.8" && ! xrayVersionAtLeast "${from:-v0}" "v26.9.8"; then
-        echoContent yellow " ---> 注意: v26.9.8 起 REALITY 只接受带 X25519MLKEM768 的客户端，Xray 内核客户端不受影响，sing-box/Clash Meta 客户端可能无法连接 REALITY"
+        echoContent yellow " ---> 注意: v26.9.8 起 REALITY 只接受带 X25519MLKEM768 的客户端"
+        realityClientNotice force
     fi
+}
+
+# Which clients can use REALITY on a core that requires X25519MLKEM768
+# (tested: sing-box 1.14.4 has no way to send it; mihomo needs
+# support-x25519mlkem768, which the Clash Meta subscription sets but a
+# vless:// link cannot carry). Usage: realityClientNotice [force]
+realityClientNotice() {
+    if [[ "${1:-}" != "force" ]]; then
+        xrayVersionAtLeast "$(installedXrayVersion)" "v26.9.8" || return 0
+    fi
+    echoContent yellow " ---> REALITY: Xray 内核客户端（v2rayN 等）和 Clash Meta 订阅可用；sing-box、以及直接导入分享链接的 Clash Meta/mihomo 无法连接"
 }
 
 # Usage: updateXray [stable|prerelease|<tag>]

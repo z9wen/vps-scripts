@@ -8,9 +8,12 @@ unInstall() {
     fi
     checkBTPanel
     echoContent yellow " ---> 脚本不会删除acme相关配置，删除请手动执行 [rm -rf /root/.acme.sh]"
-    handleNginx stop
-    if [[ -z $(pgrep -f "nginx") ]]; then
-        echoContent green " ---> 停止Nginx成功"
+    # A panel's nginx keeps serving its sites; it is reloaded at the end.
+    if [[ -z "${btDomain}" ]]; then
+        handleNginx stop
+        if [[ -z $(pgrep -f "nginx") ]]; then
+            echoContent green " ---> 停止Nginx成功"
+        fi
     fi
     if [[ "${coreInstallType}" == "1" ]]; then
         handleXray stop
@@ -33,7 +36,11 @@ unInstall() {
         echoContent green " ---> 删除伪装网站完成"
     fi
     # Other sites on the same nginx keep running without our config.
-    restoreStoppedNginx
+    if [[ -n "${btDomain}" ]]; then
+        applyPanelNginxConfig
+    else
+        restoreStoppedNginx
+    fi
 
     rm -rf /usr/bin/xraya
     rm -rf /usr/sbin/xraya

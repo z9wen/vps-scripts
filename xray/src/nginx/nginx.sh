@@ -170,6 +170,8 @@ server {
 
 	server_name ${domain};
 	root ${nginxStaticPath};
+	# The decoy marker file must not identify this script
+	location = /check { return 404; }
 
 ${xhttpLocationConfig}
 	location / {
@@ -184,6 +186,8 @@ server {
 	real_ip_header proxy_protocol;
 
 	root ${nginxStaticPath};
+	# The decoy marker file must not identify this script
+	location = /check { return 404; }
 ${xhttpLocationConfig}
 	location / {
 	${fallbackLocationConfig}
@@ -300,6 +304,23 @@ hostNginxRunning() {
 restoreStoppedNginx() {
     [[ "${nginxStoppedByAgent}" == "true" ]] || return 0
     handleNginx start
+}
+
+# A panel's nginx serves all its websites, so it is never stopped to apply
+# our config: test, then reload only when the test passes (on failure the
+# sites keep running on the old config). A stopped nginx is started as usual.
+applyPanelNginxConfig() {
+    local output
+    if ! hostNginxRunning; then
+        handleNginx start
+        return
+    fi
+    if ! output=$(hostNginx -t 2>&1); then
+        echoContent red " ---> Nginx 配置测试失败，面板站点继续使用原配置"
+        echoContent yellow "$(tail -3 <<<"${output}")"
+        return 1
+    fi
+    panelNginxReload >/dev/null 2>&1
 }
 
 # Manage Nginx

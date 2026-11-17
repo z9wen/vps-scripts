@@ -70,19 +70,19 @@ buildRelayTargetChoices() {
             Hysteria2) inboundConfig="${configPath}05_hysteria2_inbounds.json" ;;
             *) continue ;;
         esac
-        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg label "${inboundLabel}" '
-            . + [{selector:{inboundTags:[$tag],users:[]},label:($label + " / 整个入站（全部 UUID/auth）")}]
+        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg labelText "${inboundLabel}" '
+            . + [{selector:{inboundTags:[$tag],users:[]},"label":($labelText + " / 整个入站（全部 UUID/auth）")}]
         ' <<<"${relayTargetChoices}")
         clients=$(jq -c '
             (.inbounds[0].settings.clients // .inbounds[0].settings.users // .inbounds[0].users // [])
             | map(select((.email // "") != ""))
         ' "${inboundConfig}") || return 1
-        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg label "${inboundLabel}" --argjson clients "${clients}" "${relaySelectorJqDefs}"'
+        relayTargetChoices=$(jq -c --arg tag "${inboundTag}" --arg labelText "${inboundLabel}" --argjson clients "${clients}" "${relaySelectorJqDefs}"'
             reduce $clients[] as $client (.;
                 ($client.email | displayUser) as $accountTag |
                 ($client.id // $client.uuid // $client.auth // $client.password // "unknown") as $credential |
                 . + [{selector:{inboundTags:[$tag],users:[$client.email]},
-                    label:($label + " / tag: " + $accountTag + " / UUID/auth: " + $credential)}]
+                    "label":($labelText + " / tag: " + $accountTag + " / UUID/auth: " + $credential)}]
             )
         ' <<<"${relayTargetChoices}")
     done
@@ -95,7 +95,7 @@ selectRelayTargets() {
     targetCount=$(jq 'length' <<<"${relayTargetChoices}")
     ((targetCount > 0)) || return 1
     echoContent skyBlue "\n请选择需要链式转发的精确目标"
-    jq -r 'to_entries[] | "\(.key + 1).\(.value.label)"' <<<"${relayTargetChoices}"
+    jq -r 'to_entries[] | "\(.key + 1).\(.value."label")"' <<<"${relayTargetChoices}"
 
     read -r -p "请选择[可多选，例:3,6]:" selection
     selection=${selection//，/,}
@@ -368,6 +368,7 @@ ensureRelayStateV2() {
         else
             chmod 600 "${relayStateFile}"
         fi
+        migrateRelayOutboundFiles
         return
     fi
     local migrated
@@ -387,12 +388,43 @@ ensureRelayStateV2() {
             del(.inboundTags, .users)
         )]}
     ' "${relayStateFile}") || return 1
-    writeRelayState "${migrated}"
+    writeRelayState "${migrated}" || return 1
     echoContent green " ---> 已将原有中转配置迁移为多入口格式"
+    migrateRelayOutboundFiles
 }
 
 relayProfileFileIsSafe() {
     [[ $1 =~ ^relay_([A-Za-z0-9_]+_)?outbound\.json$ ]]
+}
+
+# Relay outbounds must never become Xray's default outbound. Xray prepends
+# the outbounds of each later config file, so the last file decides the
+# default, unless the file name contains "tail" (appended instead).
+# z_direct_outbound.json normally loads after relay_*.json, but the IPv6
+# global mode replaces it with IPv6_out.json, and a relay outbound would then
+# carry all unmatched traffic. Renames relay_<id>_outbound.json to
+# relay_<id>_tail_outbound.json; sets relayOutboundFilesMigrated=true when
+# something was renamed, so callers can restart Xray.
+migrateRelayOutboundFiles() {
+    relayOutboundFilesMigrated=
+    local file newFile newState
+    while IFS= read -r file; do
+        newFile=${file%outbound.json}tail_outbound.json
+        relayProfileFileIsSafe "${file}" && relayProfileFileIsSafe "${newFile}" || continue
+        # Copy, record, then remove: an interruption never leaves the state
+        # pointing at a missing file or an orphan cleanup deleting the live one.
+        if [[ -f "${configPath}${file}" ]]; then
+            cp -p "${configPath}${file}" "${configPath}${newFile}" || return 1
+        fi
+        newState=$(jq --arg old "${file}" --arg new "${newFile}" \
+            '.profiles |= map(if .outboundFile == $old then .outboundFile = $new else . end)' "${relayStateFile}") || return 1
+        if ! writeRelayState "${newState}"; then
+            rm -f "${configPath}${newFile}"
+            return 1
+        fi
+        rm -f "${configPath}${file}"
+        relayOutboundFilesMigrated=true
+    done < <(jq -r '.profiles[]?.outboundFile // empty | select(test("tail") | not)' "${relayStateFile}")
 }
 
 # Check whether the target selectors are already bound to another upstream.
@@ -503,7 +535,7 @@ selectRelayUdpMode() {
 # Add a Shadowsocks or VLESS Reality relay rule from a sing-box JSON subscription.
 setupRelaySubscription() {
     local profileName=$1 profileId=$2
-    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_outbound.json"
+    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_tail_outbound.json"
     selectRelayUdpMode
     local subscriptionUrl tempDir subscriptionFile supportedNodes nodeCount nodeIndex selectedTag generatedOutbound
     read -r -p "请输入 sing-box JSON 订阅地址:" subscriptionUrl
@@ -547,12 +579,12 @@ setupRelaySubscription() {
     local profile
     profile=$(jq -n --arg id "${profileId}" --arg name "${profileName}" --argjson selectors "${relaySelectedSelectors}" \
         --arg outboundTag "${outboundTag}" --arg outboundFile "${outboundFile}" --arg url "${subscriptionUrl}" --arg selectedTag "${selectedTag}" \
-        --arg nodeType "${relayBuiltSubscriptionType}" --arg protocol "${relayBuiltProtocol}" --arg label "${relayBuiltLabel}" \
+        --arg nodeType "${relayBuiltSubscriptionType}" --arg protocol "${relayBuiltProtocol}" --arg labelText "${relayBuiltLabel}" \
         --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" --arg udpMode "${relaySelectedUdpMode}" '
         {id:$id,name:$name,source:"subscription",selectors:$selectors,outboundTag:$outboundTag,outboundFile:$outboundFile,
          subscription:{format:"sing-box-json",url:$url,selectedTag:$selectedTag,nodeType:$nodeType},
-         tcp:{mode:"relay",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:""},
-         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:""} else {mode:"direct",protocol:"",label:"直连",address:"",port:"",bbrProfile:""} end)}')
+         tcp:{mode:"relay",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:""},
+         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:""} else {mode:"direct",protocol:"","label":"直连",address:"",port:"",bbrProfile:""} end)}')
     activateRelayProfile "${profile}" "${generatedOutbound}" || {
         rm -rf "${tempDir}"
         return 1
@@ -731,7 +763,7 @@ syncRelayRouting() {
 
 setupRelayManual() {
     local profileName=$1 profileId=$2
-    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_outbound.json"
+    local outboundTag="relay_profile_${profileId}" outboundFile="relay_${profileId}_tail_outbound.json"
     selectRelayUdpMode
     local tempDir generatedOutbound carriesUdp profile
     tempDir=$(mktemp -d /tmp/xray-relay-manual.XXXXXX) || return 1
@@ -744,11 +776,11 @@ setupRelayManual() {
     }
     profile=$(jq -n --arg id "${profileId}" --arg name "${profileName}" --argjson selectors "${relaySelectedSelectors}" \
         --arg outboundTag "${outboundTag}" --arg outboundFile "${outboundFile}" --arg protocol "${relayBuiltProtocol}" \
-        --arg label "${relayBuiltLabel}" --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" \
+        --arg labelText "${relayBuiltLabel}" --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" \
         --arg bbrProfile "${relayBuiltBbrProfile}" --arg udpMode "${relaySelectedUdpMode}" '
         {id:$id,name:$name,source:"manual",selectors:$selectors,outboundTag:$outboundTag,outboundFile:$outboundFile,
-         tcp:{mode:"relay",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:$bbrProfile},
-         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,label:$label,address:$address,port:$port,bbrProfile:$bbrProfile} else {mode:"direct",protocol:"",label:"直连",address:"",port:"",bbrProfile:""} end)}')
+         tcp:{mode:"relay",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:$bbrProfile},
+         udp:(if $udpMode == "shared" then {mode:"shared",protocol:$protocol,"label":$labelText,address:$address,port:$port,bbrProfile:$bbrProfile} else {mode:"direct",protocol:"","label":"直连",address:"",port:"",bbrProfile:""} end)}')
     activateRelayProfile "${profile}" "${generatedOutbound}" || {
         rm -rf "${tempDir}"
         return 1
@@ -767,7 +799,7 @@ selectRelayDestination() {
 
     echoContent skyBlue "\n请选择目标上游"
     jq -r '.profiles | to_entries[] |
-        "\(.key + 1).\(.value.name) -> \(.value.tcp.label) \(.value.tcp.address):\(.value.tcp.port)"
+        "\(.key + 1).\(.value.name) -> \(.value.tcp."label") \(.value.tcp.address):\(.value.tcp.port)"
     ' "${relayStateFile}"
     newOption=$((count + 1))
     echoContent yellow "${newOption}.新建上游"
@@ -834,8 +866,8 @@ showRelayConfig() {
                 ([.value.users[] | displayUser] | join(", "))
              else "全部 UUID" end)
         ) | join("\n")) +
-        "\n   TCP : \(.value.tcp.label) -> \(.value.tcp.address):\(.value.tcp.port)\n" +
-        "   UDP : \(if .value.udp.mode == "shared" then (.value.udp.label + " -> " + .value.udp.address + ":" + .value.udp.port) else "直连" end)\n" +
+        "\n   TCP : \(.value.tcp."label") -> \(.value.tcp.address):\(.value.tcp.port)\n" +
+        "   UDP : \(if .value.udp.mode == "shared" then (.value.udp."label" + " -> " + .value.udp.address + ":" + .value.udp.port) else "直连" end)\n" +
         "   来源: \(if .value.source == "subscription" then "订阅自动更新" else "手动" end)"
     ' "${relayStateFile}"
 }
@@ -862,12 +894,20 @@ updateRelaySubscriptionProfile() {
         return 1
     }
     if ! jq -e --arg tag "${selectedTag}" 'any(.[]; .tag == $tag)' <<<"${supportedNodes}" >/dev/null; then
-        selectedTag=$(jq -r --arg nodeType "${preferredNodeType}" 'first(.[] | select(._relayType == $nodeType)).tag // empty' <<<"${supportedNodes}")
-    fi
-    if [[ -z "${selectedTag}" ]]; then
-        echoContent red " ---> 更新后的订阅中没有同类型可用节点，保留旧配置"
-        rm -rf "${tempDir}"
-        return 1
+        # Providers rename nodes (traffic counters, expiry dates in the tag):
+        # follow the same server. Never fall back to "the first node": that
+        # may be another region or an information entry with a fake address.
+        local previousTag=${selectedTag}
+        selectedTag=$(jq -r --arg nodeType "${preferredNodeType}" \
+            --arg server "$(jq -r '.tcp.address // empty' <<<"${profile}")" --arg port "$(jq -r '.tcp.port // empty' <<<"${profile}")" '
+            first(.[] | select(._relayType == $nodeType and .server == $server and (.server_port | tostring) == $port)).tag // empty
+        ' <<<"${supportedNodes}")
+        if [[ -z "${selectedTag}" ]]; then
+            echoContent red " ---> $(jq -r '.name' <<<"${profile}"): 订阅中已找不到节点 ${previousTag}，保留旧配置；如需更换节点请删除该上游后重新添加"
+            rm -rf "${tempDir}"
+            return 1
+        fi
+        echoContent yellow " ---> $(jq -r '.name' <<<"${profile}"): 节点 ${previousTag} 已改名为 ${selectedTag}（服务器不变）"
     fi
     buildRelayOutboundFromSingBoxSubscription "${subscriptionFile}" "${selectedTag}" "${outboundTag}" "${generatedOutbound}" || {
         echoContent red " ---> 更新后的节点参数不完整，保留旧配置"
@@ -875,14 +915,14 @@ updateRelaySubscriptionProfile() {
         return 1
     }
     newState=$(jq --arg id "${profileId}" --arg tag "${selectedTag}" --arg nodeType "${relayBuiltSubscriptionType}" \
-        --arg protocol "${relayBuiltProtocol}" --arg label "${relayBuiltLabel}" \
+        --arg protocol "${relayBuiltProtocol}" --arg labelText "${relayBuiltLabel}" \
         --arg address "${relayBuiltAddress}" --arg port "${relayBuiltPort}" '
         .profiles |= map(if .id == $id then
             .subscription.selectedTag = $tag |
             .subscription.nodeType = $nodeType |
-            .tcp.protocol = $protocol | .tcp.label = $label | .tcp.address = $address | .tcp.port = $port |
+            .tcp.protocol = $protocol | .tcp."label" = $labelText | .tcp.address = $address | .tcp.port = $port |
             if .udp.mode == "shared" then
-                .udp.protocol = $protocol | .udp.label = $label | .udp.address = $address | .udp.port = $port
+                .udp.protocol = $protocol | .udp."label" = $labelText | .udp.address = $address | .udp.port = $port
             else . end
         else . end)
     ' "${relayStateFile}") || {
@@ -923,7 +963,7 @@ updateRelaySubscription() {
 updateAllRelaySubscriptions() {
     ensureRelayStateV2 || return 1
     local profileId updateFailed=false
-    relaySubscriptionChanged=false
+    relaySubscriptionChanged=${relayOutboundFilesMigrated:-false}
     while read -r profileId; do
         updateRelaySubscriptionProfile "${profileId}" || updateFailed=true
     done < <(jq -r '.profiles[]? | select(.source == "subscription").id' "${relayStateFile}")
@@ -1020,7 +1060,11 @@ manageRelay() {
         echoContent red " ---> 未安装，请使用脚本安装"
         return
     fi
-    ensureRelayStateV2 || return
+    withRelayLock ensureRelayStateV2 || return
+    if [[ "${relayOutboundFilesMigrated}" == "true" ]]; then
+        echoContent yellow " ---> 已调整中转出站文件名，避免中转出站成为默认出站，重启 Xray 生效"
+        restartXray
+    fi
     local relayType profileCount selectorCount
     while true; do
         ensureRelayStateV2 || return

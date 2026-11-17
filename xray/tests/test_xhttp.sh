@@ -71,6 +71,7 @@ systemctl() { return 1; }
 printf 'server {\n    include %s/rewrite/example.com.conf;\n}\n' "${panelVhostRoot}" >"${panelVhostRoot}/nginx/example.com.conf"
 printf 'location / { try_files $uri $uri/ /index.php?$args; }\n' >"${panelVhostRoot}/rewrite/example.com.conf"
 syncPanelXhttpLocation install || fail "install into the rewrite file"
+[[ "${panelXhttpInstalled}" == "true" ]] || fail "an installed location must be reported, so links use 443"
 grep -q 'try_files' "${panelVhostRoot}/rewrite/example.com.conf" || fail "user rewrite rules were lost"
 grep -q 'location ^~ /abcxhttp/' "${panelVhostRoot}/rewrite/example.com.conf" || fail "XHTTP block missing"
 syncPanelXhttpLocation install || fail "re-install should succeed"
@@ -83,6 +84,7 @@ grep -q 'try_files' "${panelVhostRoot}/rewrite/example.com.conf" || fail "remove
 before=$(cat "${panelVhostRoot}/rewrite/example.com.conf")
 nginxTestResult=1
 syncPanelXhttpLocation install && fail "a failing nginx -t must be reported"
+[[ -z "${panelXhttpInstalled}" ]] || fail "a rolled-back location must not be used by links"
 [[ "$(cat "${panelVhostRoot}/rewrite/example.com.conf")" == "${before}" ]] || fail "file not restored after failed nginx -t"
 nginxTestResult=0
 
@@ -98,6 +100,18 @@ removeAllPanelXhttpLocations
 # Without a known include, nothing in the panel is touched.
 printf 'server {\n}\n' >"${panelVhostRoot}/nginx/example.com.conf"
 syncPanelXhttpLocation install >/dev/null || fail "missing include should only print instructions"
+[[ -z "${panelXhttpInstalled}" ]] || fail "without an include, links must use the Vision port instead of 443"
 [[ -z "$(find "${panelVhostRoot}/nginx/extension" -type f)" ]] || fail "unexpected file written"
+
+# XHTTP links ask for HTTP/1.1 only when the entry cannot do HTTP/2.
+currentHost=example.com
+entryHttpVersion=2
+curl() { printf '%s' "${entryHttpVersion}"; }
+[[ "$(xhttpEntryAlpn 443)" == h2 ]] || fail "an HTTP/2 entry keeps h2"
+entryHttpVersion=1.1
+[[ "$(xhttpEntryAlpn 443)" == http/1.1 ]] || fail "an HTTP/1.1-only panel site needs alpn http/1.1"
+entryHttpVersion=0
+[[ "$(xhttpEntryAlpn 443)" == h2 ]] || fail "an unreachable entry falls back to h2"
+unset -f curl
 
 echo "xhttp tests passed"
